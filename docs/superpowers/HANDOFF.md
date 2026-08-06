@@ -1,28 +1,33 @@
 # Handoff: repo-scanner skills
 
-**Written:** 2026-08-06 · **Branch:** `develop` · **Last commit at handoff:** `3a7e0e4`
+**Written:** 2026-08-06 · **Updated:** 2026-08-06 (phase 1 plan written)
+**Branch:** `claude/handoff-docs-review-evioh5`
 
 This note exists so a fresh session — on web, mobile, or another machine — can
 pick this work up without the original conversation.
 
 ## Start here
 
-Read the approved design first:
+Read the approved design, then the phase 1 plan:
 
 ```
 docs/superpowers/specs/2026-08-06-repo-scanner-skills-design.md
+docs/superpowers/plans/2026-08-06-repo-corpus-implementation-plan.md
 ```
 
-Then invoke the `superpowers:writing-plans` skill to turn **phase 1 only**
-(`repo-corpus`) into an implementation plan. Do not plan all three skills at
-once — the spec's "Implementation sequencing" section explains why, and the
-phases are deliberately ordered so each one is independently verifiable.
+The plan is written and ready to execute — **do not re-plan phase 1**. Work
+its eight tasks in order; each states its acceptance check before the work, and
+a task is done when the check passes, not when the code looks finished.
 
 Suggested opening prompt:
 
-> Read `docs/superpowers/specs/2026-08-06-repo-scanner-skills-design.md`, then
-> use the writing-plans skill to create an implementation plan for phase 1,
-> `repo-corpus`.
+> Read `docs/superpowers/plans/2026-08-06-repo-corpus-implementation-plan.md`
+> and implement it, task by task.
+
+Phases 2 and 3 get their own plans, written only once the phase before them
+passes its self-test. Do not plan all three skills at once — the spec's
+"Implementation sequencing" section explains why, and the phases are
+deliberately ordered so each one is independently verifiable.
 
 ## Where things stand
 
@@ -30,11 +35,17 @@ Suggested opening prompt:
 
 - `CLAUDE.md` for this package (committed `c89b3a3`)
 - Design spec brainstormed, reviewed, and committed (`3a7e0e4`)
+- Phase 1 implementation plan for `repo-corpus`
 
 **Not started:** all implementation. No scanner code exists yet.
 
-**Next:** implementation plan for phase 1 (`repo-corpus`), then phase 2
+**Next:** execute the phase 1 plan, then plan and build phase 2
 (`repo-docker-scanner`), then phase 3 (`repo-packages-scanner`).
+
+> Note on tooling: the plan was asked for via the `superpowers:writing-plans`
+> skill, which was not installed in the session that wrote it. It was written
+> directly against the spec in that skill's structure. If you have the skill
+> available, use it for phases 2 and 3.
 
 ## Phase 1 scope at a glance
 
@@ -79,16 +90,18 @@ mistakes if you meet them without context:
 
 ## Open questions the author flagged
 
-Two things were called out as most worth a second look, and neither has been
-resolved:
+Two things were called out as most worth a second look:
 
-- **`repo-corpus` scope defaults.** Currently broad (archived, forks, and
-  non-default branches all included), following the principle already
-  load-bearing in `supply-chain-ioc-scan`: narrowing scope is how a scan misses
-  what it was run to find.
-- **The P0/P1/P2 priority models** in both scanners. This is what turns "400
-  findings" into something a maintainer acts on. If the tier boundaries are
-  wrong, the reports are noise.
+- **`repo-corpus` scope defaults.** *Resolved in the phase 1 plan (D6):* keep
+  them broad — archived, forks, and non-default branches all included —
+  following the principle already load-bearing in `supply-chain-ioc-scan`, that
+  narrowing scope is how a scan misses what it was run to find. The bandwidth
+  cost gets measured during Task 8 and quoted in `SKILL.md`, so revisiting the
+  default later is an argument about numbers rather than taste.
+- **The P0/P1/P2 priority models** in both scanners. **Still open**, and
+  deliberately not addressed by the phase 1 plan — it belongs to phases 2 and
+  3. This is what turns "400 findings" into something a maintainer acts on. If
+  the tier boundaries are wrong, the reports are noise.
 
 ## Context worth knowing
 
