@@ -10,6 +10,12 @@ Currently the plugin ships one skill: `skills/supply-chain-ioc-scan`, built in r
 
 > Note: `.claude-plugin/marketplace.json` currently lists the skill path as `./skills/supply-chain-security`, but the skill directory on disk is `./skills/supply-chain-ioc-scan`. Verify/reconcile this before relying on marketplace-based plugin installation.
 
+## Work In Progress
+
+Three further skills are designed but not yet implemented: `repo-corpus`, `repo-docker-scanner`, and `repo-packages-scanner` (org-wide scanning for unpinned dependencies and container images).
+
+**If you are picking this work up, read `docs/superpowers/HANDOFF.md` first** — it names the next concrete step, the decisions already made, and the open questions. The approved design is `docs/superpowers/specs/2026-08-06-repo-scanner-skills-design.md`.
+
 ## Commands
 
 There is no build/lint/test toolchain at the repo root (`Makefile` only has `make help`, which prints itself). All commands run from inside the skill directory using `python3` (no venv, no `requirements.txt` — stdlib only).
