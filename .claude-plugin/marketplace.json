@@ -1,0 +1,22 @@
+{
+  "name": "genericsuite-security",
+  "owner": {
+    "name": "Carlos Ramirez",
+    "email": "info@genericsuite.com"
+  },
+  "metadata": {
+    "description": "GenericSuite security",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "gs-security-suite",
+      "description": "GenericSuite security suite — supply chain security for OSS projects",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./skills/supply-chain-security"
+      ]
+    }
+  ]
+}
