@@ -8,26 +8,43 @@ pick this work up without the original conversation.
 
 ## Start here
 
-Read the approved design, then the phase 1 plan:
+Read the approved design, then the phase 1 plan's "Outcome" section (it records
+what shipped and, more importantly, what was *not* verified):
 
 ```
 docs/superpowers/specs/2026-08-06-repo-scanner-skills-design.md
 docs/superpowers/plans/2026-08-06-repo-corpus-implementation-plan.md
 ```
 
-The plan is written and ready to execute — **do not re-plan phase 1**. Work
-its eight tasks in order; each states its acceptance check before the work, and
-a task is done when the check passes, not when the code looks finished.
+**Phase 1 is implemented.** `skills/repo-corpus/` exists and its self-test
+passes 31/31. Next is phase 2, `repo-docker-scanner`, which begins by consuming
+a corpus.
 
 Suggested opening prompt:
 
-> Read `docs/superpowers/plans/2026-08-06-repo-corpus-implementation-plan.md`
-> and implement it, task by task.
+> Read `docs/superpowers/specs/2026-08-06-repo-scanner-skills-design.md` and
+> `tmp/unpinned-image-detection-playbook.md`, then create an implementation
+> plan for phase 2, `repo-docker-scanner`.
 
-Phases 2 and 3 get their own plans, written only once the phase before them
-passes its self-test. Do not plan all three skills at once — the spec's
-"Implementation sequencing" section explains why, and the phases are
-deliberately ordered so each one is independently verifiable.
+Phase 3 gets its own plan after that. Do not plan both at once — the spec's
+"Implementation sequencing" section explains why.
+
+## Do this first, on a machine with `gh`
+
+Phase 1 shipped with one acceptance check unmet, because the implementing
+environment had no `gh` CLI and its GitHub access was scoped to a single
+repository:
+
+```bash
+cd skills/repo-corpus && ./scripts/run_corpus.sh --org tomkat-cr
+```
+
+Reconcile the totals against `gh repo list tomkat-cr --limit 1000 --json name |
+jq length`. The live HTTPS clone path *was* verified end to end against one
+repository; what is unverified is enumeration through `gh` itself, which the
+self-test only covers via `--repos-json`. While you are there, record the
+corpus size with and without `--default-branch-only` — `SKILL.md` currently
+quotes a one-repo sample, which is not enough to revisit the scope defaults on.
 
 ## Where things stand
 
@@ -36,41 +53,42 @@ deliberately ordered so each one is independently verifiable.
 - `CLAUDE.md` for this package (committed `c89b3a3`)
 - Design spec brainstormed, reviewed, and committed (`3a7e0e4`)
 - Phase 1 implementation plan for `repo-corpus`
+- **Phase 1 implemented**: `skills/repo-corpus/` — `build_corpus.py`,
+  `_walk.py`, `run_corpus.sh`, `SKILL.md`, self-test; marketplace path fixed
+  and now guarded by an assertion
 
-**Not started:** all implementation. No scanner code exists yet.
+**Next:** plan and build phase 2 (`repo-docker-scanner`), then phase 3
+(`repo-packages-scanner`).
 
-**Next:** execute the phase 1 plan, then plan and build phase 2
-(`repo-docker-scanner`), then phase 3 (`repo-packages-scanner`).
+> Note on tooling: the phase 1 plan was asked for via the
+> `superpowers:writing-plans` skill, which was not installed in the session
+> that wrote it. It was written directly against the spec in that skill's
+> structure. If you have the skill available, use it for phases 2 and 3.
 
-> Note on tooling: the plan was asked for via the `superpowers:writing-plans`
-> skill, which was not installed in the session that wrote it. It was written
-> directly against the spec in that skill's structure. If you have the skill
-> available, use it for phases 2 and 3.
-
-## Phase 1 scope at a glance
+## What phase 1 built (the interface phase 2 consumes)
 
 `repo-corpus` turns "an org, a user, or this directory" into safe, attributable
 checkouts plus a `corpus.json` manifest. It produces **no findings** — that
 separation is what makes single-repo lint mode and org-wide audit the same code
 path in the two scanners that follow.
 
-Roughly:
+- `scripts/build_corpus.py` — `gh repo list` enumeration (or `--repos-json`);
+  parallel hardened clones; `--local` mode for existing checkouts
+- `scripts/_walk.py` — shared walking: prune counting, unreadable-path
+  counting, and no symlink ever escaping its root
+- `tests/selftest.py` — proves the hardening holds; 31 assertions
+- `SKILL.md` — the manifest contract, in the section "The Manifest Is the
+  Interface". Phase 2 should be written against those three rules.
 
-- `scripts/build_corpus.py` — `gh repo list` enumeration; parallel hardened
-  clones; `--local` mode for a single existing checkout
-- `scripts/_walk.py` — shared file walking with vendored-path pruning and
-  unreadable-path counting
-- `tests/selftest.py` — proves the hardening actually holds
-- `SKILL.md`
-- Fix the wrong skill path in `.claude-plugin/marketplace.json` and register the
-  new skills
+Exit codes differ from the scanners in one way worth knowing before you write
+phase 2: `1` means **partial corpus**, not findings. A scanner consuming a
+corpus must read `totals.failed` and carry it into its own blind-spot section.
 
 The security-sensitive part is the clone hardening: cloned repositories are
-hostile input, and nothing from a clone is ever executed. The spec's
-"Cloning: cloned repos are hostile input" section has the exact flags and the
-three non-obvious details behind them (inline credential helper, clone-to-temp
-then rename, depth-1 across all branches). Do not simplify those away — each one
-is there because of a specific failure.
+hostile input, and nothing from a clone is ever executed. Every flag is
+asserted by the self-test, and each one was verified to fail the suite when
+deleted. Do not simplify them away — each is there because of a specific
+failure.
 
 ## Decisions already made — don't relitigate
 

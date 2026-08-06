@@ -15,7 +15,8 @@
       "source": "./",
       "strict": false,
       "skills": [
-        "./skills/supply-chain-security"
+        "./skills/supply-chain-ioc-scan",
+        "./skills/repo-corpus"
       ]
     }
   ]

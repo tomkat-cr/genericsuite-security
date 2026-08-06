@@ -1,0 +1,30 @@
+[
+  {
+    "name": "genericsuite",
+    "url": "https://github.com/tomkat-cr/genericsuite",
+    "defaultBranchRef": { "name": "main" },
+    "isFork": false, "isArchived": false, "isEmpty": false,
+    "stargazerCount": 12, "pushedAt": "2026-08-01T09:12:44Z", "visibility": "PUBLIC"
+  },
+  {
+    "name": "old-experiment",
+    "url": "https://github.com/tomkat-cr/old-experiment",
+    "defaultBranchRef": { "name": "master" },
+    "isFork": false, "isArchived": true, "isEmpty": false,
+    "stargazerCount": 0, "pushedAt": "2023-02-11T18:40:02Z", "visibility": "PUBLIC"
+  },
+  {
+    "name": "forked-action",
+    "url": "https://github.com/tomkat-cr/forked-action",
+    "defaultBranchRef": { "name": "main" },
+    "isFork": true, "isArchived": false, "isEmpty": false,
+    "stargazerCount": 0, "pushedAt": "2025-11-03T07:22:10Z", "visibility": "PUBLIC"
+  },
+  {
+    "name": "placeholder",
+    "url": "https://github.com/tomkat-cr/placeholder",
+    "defaultBranchRef": null,
+    "isFork": false, "isArchived": false, "isEmpty": true,
+    "stargazerCount": 0, "pushedAt": "2026-07-30T12:00:00Z", "visibility": "PRIVATE"
+  }
+]

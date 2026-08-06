@@ -1,7 +1,8 @@
 # Implementation Plan: Phase 1 — `repo-corpus`
 
 **Date:** 2026-08-06
-**Status:** Ready to implement
+**Status:** Implemented — see "Outcome" at the end for what shipped and what
+the acceptance checks could not cover
 **Spec:** `docs/superpowers/specs/2026-08-06-repo-scanner-skills-design.md`
 **Scope:** Phase 1 only. Phases 2 (`repo-docker-scanner`) and 3
 (`repo-packages-scanner`) are out of scope and get their own plans.
@@ -391,3 +392,50 @@ unreadable counts. Phase 2 begins by consuming exactly this.
 | `gh` output shape changes | Enumeration reads named JSON fields, missing fields become `null` with a warning rather than a `KeyError` |
 | Disk exhaustion on a large org | `--limit`, `--default-branch-only`, measured sizes in `SKILL.md`; clone failures degrade to exit `1`, never a crash |
 | Manifest drift once two scanners consume it | `schema_version` is checked by consumers from phase 2 onward |
+
+---
+
+## Outcome
+
+All eight tasks implemented. `python3 tests/selftest.py` passes 31/31
+assertions.
+
+**Two bugs the acceptance checks caught**, both of which would have shipped:
+
+1. **Phantom branch in the manifest.** git shortens `refs/remotes/origin/HEAD`
+   to `origin`, not to `origin/HEAD`, so filtering on the short name recorded
+   the symbolic HEAD as a branch named `origin`. The self-test missed it
+   because its branch assertion was a subset check; it is now an exact
+   comparison, which fails against the old code. Found by the end-to-end walk
+   this plan requires — which is the entire reason that step is in the plan.
+2. **`--local` wrote its manifest into the parent of the checkout.** Lint mode
+   runs in CI, where that directory is frequently not writable. `root` (which
+   anchors relative paths) and the manifest location are now separate; a
+   regression assertion runs `--local` under a read-only parent.
+
+**Verification beyond the plan's checks:**
+
+- Each hardening flag was deleted from `clone_argv` in turn; every deletion
+  fails the self-test. The `core.hooksPath` deletion fails the end-to-end hook
+  canary too, not just the argv assertion.
+- The root-skipped unreadable-path assertion was run as uid 65534 to confirm it
+  is skipped rather than broken: it detects the locked directory and sets
+  `clean_coverage` False.
+
+**Not verified here — carry into phase 2:**
+
+- **The real `tomkat-cr` org run (Task 8's acceptance check) was not performed.**
+  The implementing environment had no `gh` CLI, and its GitHub access was
+  scoped to a single repository, so org-wide enumeration was out of scope. What
+  *was* verified is the live HTTPS clone path end to end against
+  `tomkat-cr/genericsuite-security`: real clone, real branch/HEAD recording,
+  manifest, and walk. Enumeration is covered only via `--repos-json`. **Run
+  `./scripts/run_corpus.sh --org tomkat-cr` on a machine with authenticated
+  `gh` before trusting the enumeration path**, and reconcile the totals.
+- **The `--default-branch-only` cost measurement is a one-repo sample** (316 KB
+  vs 236 KB, ~1.3x, no measurable time difference at depth 1) and is quoted as
+  such in `SKILL.md`. The D6 scope-defaults decision was meant to be revisitable
+  against a real org-wide number; that number still needs collecting.
+- **The macOS Keychain behaviour** the inline credential helper exists for
+  cannot be reproduced on Linux. The flag is asserted present, not observed
+  working.
