@@ -161,7 +161,7 @@ def select(repos, args, warnings):
 # Cloning - the security-sensitive part
 # --------------------------------------------------------------------------
 
-def clone_argv(url, dest, default_branch_only=False):
+def clone_argv(url, dest, default_branch_only=False, branch=None):
     """Build the hardened clone command.
 
     Kept as one function so the self-test can assert on the argv directly: an
@@ -188,8 +188,12 @@ def clone_argv(url, dest, default_branch_only=False):
                                  Every branch at depth 1: full branch coverage
                                  without full history.
       --no-tags                  Tags are mutable and not needed to scan a tree.
+
+    `branch` pins the corpus to one named branch: that branch becomes the
+    checked-out working tree, which is what scanners actually walk. Without it
+    the working tree is whatever the repo's default branch is, per repo.
     """
-    return [
+    argv = [
         "git",
         "-c", "core.hooksPath=/dev/null",
         "-c", "filter.lfs.smudge=cat",
@@ -198,9 +202,19 @@ def clone_argv(url, dest, default_branch_only=False):
         "-c", "credential.helper=",
         "-c", "credential.helper=!gh auth git-credential",
         "clone", "--quiet", "--depth", "1",
-        "--single-branch" if default_branch_only else "--no-single-branch",
-        "--no-tags", url, dest,
     ]
+    if branch:
+        argv += ["--single-branch", "--branch", branch]
+    else:
+        argv.append("--single-branch" if default_branch_only else "--no-single-branch")
+    argv += ["--no-tags", url, dest]
+    return argv
+
+
+# git localizes its messages, so this is only parseable with LC_ALL=C pinned in
+# clone_env(). Detecting it is what separates "this repo has no such branch" - a
+# fact - from "this clone failed" - a blind spot.
+NO_SUCH_BRANCH = re.compile(r"Remote branch .* not found in upstream")
 
 
 def git_error_summary(proc):
@@ -226,6 +240,11 @@ def clone_env():
     env = os.environ.copy()
     env["GIT_LFS_SKIP_SMUDGE"] = "1"
     env["GIT_TERMINAL_PROMPT"] = "0"   # never block a parallel run on a prompt
+    # Pin the message locale. git translates its output, and both
+    # git_error_summary() and NO_SUCH_BRANCH read those messages - under a
+    # translated locale a missing branch would be misfiled as a clone failure.
+    env["LC_ALL"] = "C"
+    env["LANG"] = "C"
     return env
 
 
@@ -277,6 +296,7 @@ def clone_one(repo, root, args):
         "status": "failed",
         "error": None,
         "default_branch": (repo.get("defaultBranchRef") or {}).get("name"),
+        "checked_out": None,
         "head": None,
         "branches": [],
         "clone_duration_s": None,
@@ -317,10 +337,18 @@ def clone_one(repo, root, args):
     started = time.time()
     try:
         proc = subprocess.run(
-            clone_argv(url, tmp, args.default_branch_only),
+            clone_argv(url, tmp, args.default_branch_only, args.branch),
             capture_output=True, text=True, env=clone_env(), timeout=args.timeout)
         if proc.returncode != 0:
-            entry["error"] = git_error_summary(proc)
+            # "This repo has no branch X" is an answer, not a malfunction. Filing
+            # it as `failed` would inflate the partial-corpus signal that exists
+            # to mean "something went wrong and you have a blind spot", and the
+            # two need to stay distinguishable.
+            if args.branch and NO_SUCH_BRANCH.search(proc.stderr or ""):
+                entry["status"] = "skipped"
+                entry["error"] = f"no branch {args.branch!r} in this repository"
+            else:
+                entry["error"] = git_error_summary(proc)
             return entry
     except subprocess.TimeoutExpired:
         entry["error"] = f"timeout after {args.timeout}s"
@@ -344,12 +372,19 @@ def clone_one(repo, root, args):
     entry["status"] = "cloned"
     entry["path"] = os.path.join("repos", name)
     entry["branches"] = branches_of(final)
-    default = entry["default_branch"]
+    # With --branch, that branch IS the corpus for this repo: it is the checked
+    # out working tree scanners walk, so it must be what `head` attributes to -
+    # not the repo's nominal default branch, which was never fetched.
+    wanted = args.branch or entry["default_branch"]
     for b in entry["branches"]:
-        if b["name"] == default:
+        if b["name"] == wanted:
             entry["head"] = b["head"]
     if entry["head"] is None and entry["branches"]:
         entry["head"] = entry["branches"][0]["head"]
+    # `default_branch` stays the repo's real default - overwriting it would make
+    # the manifest misdescribe the repository. `checked_out` says which branch is
+    # actually on disk, which is the one a scanner's findings belong to.
+    entry["checked_out"] = wanted
     return entry
 
 
@@ -378,6 +413,7 @@ def local_entry(path, root, warnings):
         "status": "local",
         "error": None,
         "default_branch": None,
+        "checked_out": None,
         "head": None,
         "branches": [],
         "clone_duration_s": None,
@@ -400,8 +436,10 @@ def local_entry(path, root, warnings):
     entry["head"] = head
     if branch and branch != "HEAD":
         entry["default_branch"] = branch
+        entry["checked_out"] = branch
         entry["branches"] = [{"name": branch, "head": head}]
     else:
+        entry["checked_out"] = "(detached)"
         entry["branches"] = [{"name": "(detached)", "head": head}]
     return entry
 
@@ -460,6 +498,10 @@ def build_parser():
     p.add_argument("--no-forks", action="store_true", help="exclude forks")
     p.add_argument("--default-branch-only", action="store_true",
                    help="clone only the default branch (cheaper; narrower)")
+    p.add_argument("--branch", metavar="NAME",
+                   help="build the corpus from this branch instead of each repo's "
+                        "default; it becomes the checked-out tree scanners walk. "
+                        "Repos without it are recorded as skipped, never dropped")
     p.add_argument("--include", metavar="REGEX", help="only repos whose name matches")
     p.add_argument("--exclude", metavar="REGEX", help="skip repos whose name matches")
     p.add_argument("--list-only", action="store_true",
@@ -468,8 +510,17 @@ def build_parser():
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     warnings = []
+
+    if args.branch and args.default_branch_only:
+        parser.error("--branch and --default-branch-only contradict each other: "
+                     "one pins a named branch, the other pins each repo's default")
+    if args.branch and args.local:
+        parser.error("--branch does not apply to --local: an existing working "
+                     "tree is on whatever branch you left it on. Check it out "
+                     "yourself, then re-run.")
 
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     default_out = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"repo-corpus-{stamp}")
@@ -503,11 +554,11 @@ def main(argv=None):
             "root": root,
             "source": {"mode": "local", "target": None,
                        "filters": {"archived": None, "forks": None,
-                                   "default_branch_only": None, "limit": None,
-                                   "include": None, "exclude": None}},
+                                   "default_branch_only": None, "branch": None,
+                                   "limit": None, "include": None, "exclude": None}},
             "totals": {"enumerated": len(entries), "selected": len(entries),
                        "cloned": sum(1 for e in entries if e["status"] == "local"),
-                       "failed": failed},
+                       "failed": failed, "skipped": 0},
             "repos": entries,
             "warnings": warnings,
         }
@@ -577,6 +628,25 @@ def main(argv=None):
 
     cloned = sum(1 for e in entries if e["status"] == "cloned")
     failed = sum(1 for e in entries if e["status"] == "failed")
+    skipped = sum(1 for e in entries if e["status"] == "skipped")
+
+    # A branch filter that matches almost nothing is a scope decision that
+    # silently shrank the corpus. Say so: the repos are in the manifest as
+    # skipped, but nobody reads 40 entries to notice 38 of them are empty.
+    if args.branch:
+        no_branch = sum(1 for e in entries
+                        if e["status"] == "skipped" and "no branch" in (e["error"] or ""))
+        if no_branch:
+            msg = (f"{no_branch} of {len(selected)} selected repo(s) have no branch "
+                   f"{args.branch!r} and were not cloned. They are in the manifest "
+                   f"with status 'skipped'.")
+            warnings.append(msg)
+            log(f"  NOTE: {msg}")
+    if selected and cloned == 0:
+        msg = ("no repository was cloned - the corpus is empty. Every scan over "
+               "it will report clean because there is nothing in it.")
+        warnings.append(msg)
+        log(f"  WARNING: {msg}")
 
     manifest = {
         "schema_version": SCHEMA_VERSION,
@@ -590,13 +660,14 @@ def main(argv=None):
                 "archived": not args.no_archived,
                 "forks": not args.no_forks,
                 "default_branch_only": args.default_branch_only,
+                "branch": args.branch,
                 "limit": args.limit,
                 "include": args.include,
                 "exclude": args.exclude,
             },
         },
         "totals": {"enumerated": enumerated, "selected": len(selected),
-                   "cloned": cloned, "failed": failed},
+                   "cloned": cloned, "failed": failed, "skipped": skipped},
         "repos": entries,
         "warnings": warnings,
     }
@@ -607,7 +678,7 @@ def main(argv=None):
         return 2
 
     print(manifest_path)
-    log(f"corpus: {cloned} cloned, {failed} failed, root {root}")
+    log(f"corpus: {cloned} cloned, {skipped} skipped, {failed} failed, root {root}")
     if failed:
         log("PARTIAL CORPUS - any scan over it has a blind spot and must say so.")
         return 1

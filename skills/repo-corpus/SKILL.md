@@ -66,6 +66,31 @@ Check scope before committing to a large clone:
 python3 scripts/build_corpus.py --org tomkat-cr --list-only
 ```
 
+## Pinning the Corpus to One Branch
+
+```bash
+./scripts/run_corpus.sh --org tomkat-cr --branch develop
+```
+
+`--branch NAME` builds the corpus from that branch instead of each repo's
+default, and **checks it out as the working tree** — which is what scanners
+actually walk. Without it, each repo is scanned on whatever its own default
+branch happens to be, which across an org is not one consistent thing.
+
+- Only that branch is fetched (`--single-branch`), so it is cheaper than the
+  default all-branches clone, not more expensive.
+- **A repo without that branch is `skipped`, not `failed`.** "This repo has no
+  `develop`" is an answer, not a malfunction, and filing it as a failure would
+  inflate the partial-corpus signal that means "something went wrong". Those
+  repos stay in the manifest with a reason, and a warning summarises how many
+  there were — a branch filter that quietly matches two repos out of forty is a
+  scope decision you need to see.
+- `default_branch` still names the repository's real default; `checked_out`
+  names the branch on disk. Findings belong to `checked_out`.
+- Mutually exclusive with `--default-branch-only`, and not accepted with
+  `--local` (an existing working tree is on whatever branch you left it on —
+  check it out yourself).
+
 ## Cloned Repositories Are Hostile Input
 
 Every clone runs with these flags. Each one prevents a specific failure; none

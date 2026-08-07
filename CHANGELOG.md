@@ -9,6 +9,7 @@ This project adheres to [Semantic Versioning](http://semver.org/) and [Keep a Ch
 ### Added
 - `repo-corpus` skill (phase 1 of the org-wide repository scanner design): enumerates an org or user via `gh`, clones with hardened flags, and emits a `corpus.json` manifest. Ships `scripts/_walk.py` (shared walking with prune counting and unreadable-path tracking) and a self-test that proves the clone hardening holds.
 - Design spec and phase 1 implementation plan under `docs/superpowers/`.
+- `build_corpus.py --branch NAME` pins the corpus to one branch across every repository, checking it out as the working tree scanners walk. Repositories without that branch are recorded as `skipped` with a reason and summarised in `warnings[]`, never dropped and never counted as failures. Manifest entries gain `checked_out` (the branch on disk) alongside `default_branch` (the repository's own default).
 
 ### Changed
 - `repo-corpus` and the two planned scanners consume a corpus rather than enumerating repositories themselves, so single-repo lint mode and org-wide audit share one code path.

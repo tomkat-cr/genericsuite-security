@@ -312,6 +312,81 @@ def test_branch_coverage(base):
     check("a complete corpus exits 0", proc.returncode == 0, f"exit={proc.returncode}")
 
 
+def test_branch_filter(base):
+    """--branch pins the corpus to one branch: it must be the tree on disk."""
+    src = make_source_repo(os.path.join(base, "src-bf"), extra_branch="feature-x")
+    payload = [
+        {"name": "hasbranch", "url": f"file://{src}",
+         "defaultBranchRef": {"name": "main"}, "isFork": False, "isArchived": False,
+         "isEmpty": False, "stargazerCount": 0, "pushedAt": "2026-08-01T00:00:00Z",
+         "visibility": "PUBLIC"},
+    ]
+    pj = os.path.join(base, "bf.json")
+    with open(pj, "w") as f:
+        json.dump(payload, f)
+
+    out = os.path.join(base, "corpus-branch")
+    proc = run([sys.executable, BUILD, "--org", "fixture", "--repos-json", pj,
+                "--out", out, "--branch", "feature-x"])
+    m = json.load(open(os.path.join(out, "corpus.json")))
+    e = m["repos"][0]
+
+    check("--branch clones only the named branch", proc.returncode == 0
+          and [b["name"] for b in e["branches"]] == ["feature-x"],
+          f"branches={e['branches']} exit={proc.returncode}")
+    # The point of the flag: scanners walk the working tree, so the named branch
+    # must actually be checked out. Recording it in metadata alone would mean
+    # scanning the default branch while the manifest claims otherwise.
+    check("--branch checks the named branch out as the working tree",
+          os.path.isfile(os.path.join(out, e["path"], "second.txt")),
+          "second.txt exists only on feature-x; the tree on disk is not that branch")
+    check("checked_out names the branch on disk, and default_branch still names the repo's",
+          e.get("checked_out") == "feature-x" and e.get("default_branch") == "main",
+          f"checked_out={e.get('checked_out')} default_branch={e.get('default_branch')}")
+    check("head attributes to the checked-out branch",
+          e["head"] == e["branches"][0]["head"] and len(e["head"]) == 40)
+    check("the branch filter is recorded in the manifest",
+          m["source"]["filters"].get("branch") == "feature-x")
+
+    # A repo that simply has no such branch is a fact, not a malfunction: it must
+    # not inflate the partial-corpus signal that means "something went wrong".
+    out2 = os.path.join(base, "corpus-nobranch")
+    proc2 = run([sys.executable, BUILD, "--org", "fixture", "--repos-json", pj,
+                 "--out", out2, "--branch", "no-such-branch"])
+    m2 = json.load(open(os.path.join(out2, "corpus.json")))
+    e2 = m2["repos"][0]
+    check("a repo lacking the branch is 'skipped', not 'failed'",
+          e2["status"] == "skipped" and "no branch" in (e2["error"] or ""),
+          f"entry={e2}")
+    check("a missing branch does not report a partial corpus",
+          proc2.returncode == 0, f"exit={proc2.returncode}")
+    check("skipped-for-branch repos are summarised in warnings",
+          any("no branch" in w for w in m2.get("warnings", [])),
+          f"warnings={m2.get('warnings')}")
+    check("an empty corpus warns that scans over it will find nothing",
+          any("corpus is empty" in w for w in m2.get("warnings", [])),
+          f"warnings={m2.get('warnings')}")
+    check("a repo lacking the branch leaves nothing under repos/",
+          not os.path.exists(os.path.join(out2, "repos", "hasbranch")))
+
+    check("--branch and --default-branch-only are refused together",
+          run([sys.executable, BUILD, "--org", "f", "--repos-json", pj,
+               "--branch", "x", "--default-branch-only"]).returncode == 2)
+    # Strict: the flag and its value must be adjacent, --single-branch must be
+    # present, and --no-single-branch must NOT be - the two contradict, and git
+    # would silently honour the last one rather than error.
+    argv = clone_argv("u", "d", branch="dev")
+    paired = any(argv[i] == "--branch" and argv[i + 1] == "dev"
+                 for i in range(len(argv) - 1))
+    check("clone_argv wires --branch to --single-branch, with no contradiction",
+          paired and "--single-branch" in argv and "--no-single-branch" not in argv,
+          f"argv={argv}")
+    check("the hardening flags survive --branch",
+          all(f in argv for f in ("core.hooksPath=/dev/null", "filter.lfs.smudge=cat",
+                                  "--no-tags", "--depth")),
+          f"argv={argv}")
+
+
 def test_empty_repo_recorded(base):
     """An empty repo is skipped but never silently dropped (manifest rule 1)."""
     pj = os.path.join(HERE, "fixtures", "gh-repo-list.json")
@@ -588,6 +663,7 @@ def main():
         print("\nFailure handling and the manifest contract")
         test_failed_clone(base)
         test_branch_coverage(base)
+        test_branch_filter(base)
         test_empty_repo_recorded(base)
         test_enumeration_truncation(base)
         print("\nLocal mode")
