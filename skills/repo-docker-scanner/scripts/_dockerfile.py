@@ -32,11 +32,21 @@ MOUNT_FROM_RE = re.compile(r"^\s*RUN\s+.*?--mount=[^\s]*\bfrom=([A-Za-z0-9._/:@-
 PLATFORM_RE = re.compile(r"--platform=[^\s]+\s*", re.IGNORECASE)
 VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 
-# Filenames that are Dockerfiles by name.
+# Filenames that are Dockerfiles by name. All CASE-INSENSITIVE and all PREFIX
+# matches, so `Dockerfile.dev`, `Dockerfile-api`, `dockerfile.prod` and
+# `DOCKERFILE` are all recognised. Two reasons this is not fussiness:
+#   - `docker build -f` accepts any filename, so per-environment variants
+#     (Dockerfile.dev / .prod / .ci) are the norm, not the exception.
+#   - macOS and Windows have case-insensitive filesystems, so a repository
+#     authored on either can carry `dockerfile` and behave identically there
+#     while a case-sensitive matcher silently skips it on Linux.
+# A missed Dockerfile is a whole file's worth of FROM lines absent from the
+# report, which reads as clean.
 NAME_PATTERNS = (
-    re.compile(r"^Dockerfile"),
+    re.compile(r"^Dockerfile", re.IGNORECASE),
     re.compile(r"\.dockerfile$", re.IGNORECASE),
-    re.compile(r"^Containerfile"),
+    re.compile(r"^Containerfile", re.IGNORECASE),
+    re.compile(r"\.containerfile$", re.IGNORECASE),
 )
 
 

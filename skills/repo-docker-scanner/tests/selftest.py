@@ -31,6 +31,7 @@ sys.path.insert(0, CORPUS_SCRIPTS)
 import _classify        # noqa: E402
 import _dockerfile      # noqa: E402
 import _yamlish         # noqa: E402
+import scan_images      # noqa: E402
 
 GREEN, RED, YELLOW, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[0m"
 results = []
@@ -187,6 +188,49 @@ def test_unit_parsers():
           "node" in refs, f"got {refs}")
     check("a genuine stage reference (`FROM builder`) is NOT reported",
           "builder" not in refs, f"got {refs}")
+
+    # Dockerfile discovery is by PREFIX and CASE-INSENSITIVE: `docker build -f`
+    # accepts any filename, so per-environment variants (Dockerfile.dev/.prod)
+    # are the norm; and macOS/Windows checkouts can carry a lowercase
+    # `dockerfile` that behaves identically there while a case-sensitive match
+    # silently skips it on Linux. A missed Dockerfile is a whole file's worth of
+    # FROM lines absent from the report.
+    dockerfile_names = ["Dockerfile", "Dockerfile.dev", "Dockerfile-api",
+                        "Dockerfile_test", "api.Dockerfile", "api.dockerfile",
+                        "Containerfile", "Containerfile.dev", "dockerfile",
+                        "dockerfile.dev", "DOCKERFILE", "Dockerfile.j2",
+                        "CONTAINERFILE.prod"]
+    missed = [n for n in dockerfile_names if not _dockerfile.looks_like_dockerfile(n)]
+    check("Dockerfile discovery matches every case/prefix variant",
+          not missed, f"missed: {missed}")
+    not_dockerfiles = ["docker-compose.yml", "Makefile", ".dockerignore"]
+    false_positives = [n for n in not_dockerfiles if _dockerfile.looks_like_dockerfile(n)]
+    check("Dockerfile discovery does not fire on unrelated filenames",
+          not false_positives, f"false positives: {false_positives}")
+
+    # The priority tier must not depend on filesystem case either - a Dockerfile
+    # matched case-insensitively above still needs to land in the right tier, or
+    # the fix above is only cosmetic (the finding exists but is silently
+    # mistiered to the P1 default instead of its real rule).
+    #
+    # Comparing TIER ALONE is not enough here and passed vacuously on a broken
+    # build during mutation testing: the Dockerfile-specific rule and the P1
+    # catch-all default rule share the same tier, so a case match that falls
+    # through to the default still "looks" P1 and hides the regression. The
+    # priority_reason distinguishes "matched its own rule" from "fell through
+    # to the default", so comparing the full (tier, why) pair is required.
+    pol_for_tier = json.load(open(os.path.join(SKILL, "policy", "images.json")))
+    entry = {"github": {}}
+    expected = scan_images.priority_for("Dockerfile", entry, pol_for_tier)
+    mistiered = [p for p in ("Dockerfile", "dockerfile.dev", "DOCKERFILE.prod",
+                             "sub/DockerFile")
+                if scan_images.priority_for(p, entry, pol_for_tier) != expected]
+    check("priority tier AND reason for Dockerfile* is case-insensitive "
+          "(not just falling through to the same-tier default)",
+          not mistiered, f"mistiered: {mistiered}, expected {expected}")
+    ci_tier, ci_why = scan_images.priority_for(".GITHUB/WORKFLOWS/ci.yml", entry, pol_for_tier)
+    check("priority tier for CI workflow paths is case-insensitive",
+          ci_tier == "P0" and "default" not in ci_why, f"got {(ci_tier, ci_why)}")
 
     pol = json.load(open(os.path.join(SKILL, "policy", "images.json")))
     table = [("nginx@sha256:" + "a" * 64, "digest"), ("i:1.27.4", "version"),

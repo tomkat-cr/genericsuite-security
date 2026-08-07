@@ -79,12 +79,19 @@ def priority_for(relpath, repo_entry, policy):
     if repo_entry.get("github", {}) and repo_entry["github"].get("isArchived"):
         return policy.get("archived_repo_tier", "P2"), "archived repository"
     posix = relpath.replace(os.sep, "/")
+    # Matched case-INsensitively, same reasoning as the Dockerfile name check in
+    # _dockerfile.py: a rule glob like "**/Dockerfile*" must still catch
+    # "dockerfile.dev" from a case-insensitive filesystem, or a genuine P0
+    # workflow file on a filesystem/CI runner that happens to differ in case
+    # would silently fall through to the P1 default instead.
+    low = posix.lower()
     for rule in policy.get("priority_rules", []):
         when = rule.get("when", {})
         glob = when.get("path_glob")
         if glob is None:
             return rule["tier"], rule.get("why", "")
-        if fnmatch.fnmatch(posix, glob) or fnmatch.fnmatch("/" + posix, glob):
+        glow = glob.lower()
+        if fnmatch.fnmatch(low, glow) or fnmatch.fnmatch("/" + low, glow):
             return rule["tier"], rule.get("why", "")
     return "P1", "default"
 

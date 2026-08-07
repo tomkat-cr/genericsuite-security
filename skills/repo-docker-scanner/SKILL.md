@@ -93,6 +93,13 @@ substitutes `ARG` defaults into `FROM`, records stage aliases so `FROM builder`
 is skipped while `FROM node` is not, strips `--platform`, skips `scratch`, and
 reads `COPY --from=` and `RUN --mount=…,from=`. Discovery is by filename **and**
 by content sniff, so a renamed Dockerfile cannot evade every name-based pass.
+Filename matching is by **prefix and case-insensitive** — `Dockerfile.dev`,
+`Dockerfile-api`, `api.dockerfile`, and a plain `dockerfile` from a
+case-insensitive checkout (macOS, Windows) are all recognised, because a missed
+Dockerfile is a whole file's worth of `FROM` lines silently absent from the
+report. The `**/Dockerfile*` priority rule matches the same way, so a
+case-varied Dockerfile still lands in its real tier instead of falling through
+to the P1 default.
 
 **YAML is read structurally.** Image keys are matched by case-insensitive
 `image` substring over key paths, which catches `postgresImage:`,

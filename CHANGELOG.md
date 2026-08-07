@@ -16,6 +16,7 @@ This project adheres to [Semantic Versioning](http://semver.org/) and [Keep a Ch
 - `repo-corpus` and the two planned scanners consume a corpus rather than enumerating repositories themselves, so single-repo lint mode and org-wide audit share one code path.
 
 ### Fixed
+- `repo-docker-scanner` Dockerfile discovery and its `**/Dockerfile*` priority rule now match by prefix and case-insensitively (`Dockerfile.dev`, `Dockerfile-api`, and a plain `dockerfile` from a case-insensitive checkout), so a missed Dockerfile can no longer silently drop a whole file's worth of `FROM` lines from the report or mistier a real one to the P1 default.
 - `run_corpus.sh` crashed on macOS's bash 3.2 (empty-array expansion under `set -u`) and then reported the crash as `PARTIAL CORPUS` — a verdict about repositories for a run that never reached them. It now uses positional parameters, and refuses to report any corpus outcome without a manifest to back it.
 - The self-test built fixture repositories with `git init -b`, which requires git 2.28; macOS ships older. Fixture commands are now checked, and a preflight reports an unusable environment as a setup failure instead of five unrelated assertion failures.
 - Clone failures recorded git's trailing boilerplate rather than the line naming the cause.
