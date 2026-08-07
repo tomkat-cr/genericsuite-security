@@ -26,24 +26,51 @@ fi
 # so the hardening properties are invisible when they hold - the self-test is
 # the only signal that they still do. A corpus built by unverified hardening is
 # not a corpus anyone should scan.
-echo "### Step 1: self-test (proves the clone hardening still holds)"
-if ! python3 "$SKILL_DIR/tests/selftest.py"; then
-  echo >&2
-  echo "  SELF-TEST FAILED - not building a corpus. Cloned repositories are" >&2
-  echo "  hostile input, and the protections against them are not verified." >&2
-  exit 2
+# REPO_CORPUS_SKIP_SELFTEST exists for exactly one caller: the self-test, which
+# drives this script to check its reporting logic and would otherwise recurse
+# into itself forever. It is deliberately loud - skipping verification is not a
+# supported way to run a real corpus build.
+if [ "${REPO_CORPUS_SKIP_SELFTEST:-0}" = "1" ]; then
+  echo "### Step 1: SELF-TEST SKIPPED (REPO_CORPUS_SKIP_SELFTEST=1)"
+  echo "    The clone hardening is NOT verified in this run."
+else
+  echo "### Step 1: self-test (proves the clone hardening still holds)"
+  if ! python3 "$SKILL_DIR/tests/selftest.py"; then
+    echo >&2
+    echo "  SELF-TEST FAILED - not building a corpus. Cloned repositories are" >&2
+    echo "  hostile input, and the protections against them are not verified." >&2
+    exit 2
+  fi
 fi
 
 echo
 echo "### Step 2: build the corpus"
-OUT_ARG=()
-[ -n "${OUT:-}" ] && OUT_ARG=(--out "$OUT")
 
-MANIFEST="$(python3 "$SKILL_DIR/scripts/build_corpus.py" "${OUT_ARG[@]}" "$@")"
+# NO BASH ARRAYS. macOS ships bash 3.2, where "${arr[@]}" on an EMPTY array
+# under `set -u` aborts with "unbound variable" - fixed only in bash 4.4. This
+# script did exactly that, and the failure was worse than the crash: the empty
+# result was then reported as "PARTIAL CORPUS", i.e. a scan verdict for a run
+# that never happened. Positional parameters behave identically on every bash.
+if [ -n "${OUT:-}" ]; then
+  set -- --out "$OUT" "$@"
+fi
+
+MANIFEST="$(python3 "$SKILL_DIR/scripts/build_corpus.py" "$@")"
 RC=$?
 
 echo
 echo "======================================================================"
+
+# A driver failure must never be reported as a corpus outcome. Exit 1 means
+# "partial corpus" - a statement about repositories - so it may only be printed
+# when a manifest actually exists to back it up.
+if [ -z "$MANIFEST" ] || [ ! -f "$MANIFEST" ]; then
+  echo "ERROR: no manifest was produced (builder exit $RC)." >&2
+  echo "  This is a failure of the run itself, not a finding about any" >&2
+  echo "  repository. Nothing was scanned and nothing is known." >&2
+  exit 2
+fi
+
 if [ $RC -eq 2 ]; then
   echo "ERROR: no usable corpus was produced."
   exit 2

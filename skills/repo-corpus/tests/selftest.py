@@ -20,6 +20,8 @@ Exit: 0 all assertions passed, 1 something is broken (do not build a corpus).
 """
 import json
 import os
+import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -454,6 +456,60 @@ def test_walk_unreadable(base):
 # 8: marketplace registration
 # ---------------------------------------------------------------------------
 
+def test_driver_shell_portability(base):
+    """The driver must survive bash 3.2, and must never report a scan outcome
+    for a run that did not happen."""
+    driver = os.path.join(SCRIPTS, "run_corpus.sh")
+    src = open(driver, encoding="utf-8").read()
+
+    # Static, because bash 3.2 cannot be installed here to reproduce it: on
+    # macOS's bash 3.2, "${arr[@]}" on an EMPTY array under `set -u` aborts with
+    # "unbound variable". Positional parameters are the portable substitute.
+    # Match ${NAME[@]} / ${NAME[*]} specifically. An earlier version of this
+    # check excluded any line containing "$@" - but the offending line held BOTH
+    # a positional expansion and an array one, so the check passed against the
+    # very bug it was written for. A guard that cannot fail is not a guard.
+    array_expansion = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\[[@*]\]")
+    array_assignment = re.compile(r"^\s*[A-Za-z_][A-Za-z0-9_]*=\(")
+    offenders = [ln.strip() for ln in src.splitlines()
+                 if not ln.strip().startswith("#")
+                 and (array_expansion.search(ln) or array_assignment.search(ln))]
+    check("the driver uses no bash arrays (macOS ships bash 3.2)",
+          not offenders, f"array usage found: {offenders}")
+    check("the driver does not use associative arrays",
+          "declare -A" not in src)
+
+    # A failure of the run itself must not be dressed up as a statement about
+    # repositories. Exit 1 means "partial corpus"; it may only appear when a
+    # manifest exists. --repos-json on a missing file fails deterministically
+    # and offline.
+    # Reproduce the ACTUAL failure faithfully. The reported bug was the driver
+    # dying inside a command substitution: exit status 1, no manifest, no output
+    # - which the driver then announced as "PARTIAL CORPUS", a verdict about
+    # repositories for a run that never reached them. A merely-missing argument
+    # exits 2 and would not have caught it, so the builder is stubbed to exit 1
+    # silently, in a throwaway skill layout the driver resolves from its own path.
+    stub_skill = os.path.join(base, "stub-skill")
+    os.makedirs(os.path.join(stub_skill, "scripts"), exist_ok=True)
+    shutil.copy(driver, os.path.join(stub_skill, "scripts", "run_corpus.sh"))
+    with open(os.path.join(stub_skill, "scripts", "build_corpus.py"), "w") as f:
+        f.write("import sys\nsys.exit(1)\n")     # exit 1, nothing on stdout
+    stub_driver = os.path.join(stub_skill, "scripts", "run_corpus.sh")
+
+    env = dict(os.environ, REPO_CORPUS_SKIP_SELFTEST="1")   # or it recurses into us
+    proc = subprocess.run(["bash", stub_driver, "--org", "fixture"],
+                          capture_output=True, text=True, env=env, timeout=120)
+    out = proc.stdout + proc.stderr
+    check("a builder that exits 1 without a manifest is reported as an error, not a corpus",
+          proc.returncode == 2, f"exit={proc.returncode}\n{out[-400:]}")
+    check("a run that produced no manifest is never called PARTIAL CORPUS",
+          "PARTIAL CORPUS" not in out,
+          f"claimed a corpus verdict for a run that produced none:\n{out[-400:]}")
+    check("skipping the self-test says so loudly",
+          "SELF-TEST SKIPPED" in out and "NOT verified" in out,
+          "the only supported use of REPO_CORPUS_SKIP_SELFTEST must announce itself")
+
+
 def test_marketplace_paths():
     mp = os.path.join(REPO_ROOT, ".claude-plugin", "marketplace.json")
     try:
@@ -510,6 +566,8 @@ def main():
         test_walk_symlinks(base)
         test_walk_prune_and_file_root(base)
         test_walk_unreadable(base)
+        print("\nDriver")
+        test_driver_shell_portability(base)
         print("\nRegistration")
         test_marketplace_paths()
 
