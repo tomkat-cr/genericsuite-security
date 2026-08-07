@@ -29,22 +29,28 @@ Suggested opening prompt:
 Phase 3 gets its own plan after that. Do not plan both at once — the spec's
 "Implementation sequencing" section explains why.
 
-## Do this first, on a machine with `gh`
+## Verified on real hardware
 
-Phase 1 shipped with one acceptance check unmet, because the implementing
-environment had no `gh` CLI and its GitHub access was scoped to a single
-repository:
+Phase 1's last outstanding acceptance check is closed. On macOS (git 2.21,
+bash 3.2), `./scripts/run_corpus.sh --org tomkat-cr --include prico` enumerated
+100 repositories, selected and cloned 5, and reported a complete corpus. The
+`gh` enumeration path, which the self-test can only cover via `--repos-json`,
+now has a real run behind it.
 
-```bash
-cd skills/repo-corpus && ./scripts/run_corpus.sh --org tomkat-cr
-```
+Two things that run surfaced, both fixed:
 
-Reconcile the totals against `gh repo list tomkat-cr --limit 1000 --json name |
-jq length`. The live HTTPS clone path *was* verified end to end against one
-repository; what is unverified is enumeration through `gh` itself, which the
-self-test only covers via `--repos-json`. While you are there, record the
-corpus size with and without `--default-branch-only` — `SKILL.md` currently
-quotes a one-repo sample, which is not enough to revisit the scope defaults on.
+- The driver crashed on macOS's bash 3.2 (empty-array expansion under `set -u`)
+  and then reported the crash as "PARTIAL CORPUS" — a verdict about
+  repositories for a run that never reached them. The driver now refuses to
+  report any corpus outcome without a manifest to back it.
+- Enumeration returned exactly 100, which is `gh`'s page size. Nothing warned.
+  A capped list is the one incompleteness a manifest cannot express as a
+  failure, so `build_corpus.py` now warns on `--limit` hits and on exact
+  page-boundary counts.
+
+**Still worth collecting:** corpus size with and without
+`--default-branch-only` across a full org. `SKILL.md` quotes a one-repo sample,
+which is not enough to revisit the D6 scope defaults on.
 
 ## Where things stand
 

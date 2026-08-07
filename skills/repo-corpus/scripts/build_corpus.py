@@ -87,6 +87,33 @@ def load_repos_json(path):
     return data
 
 
+def check_enumeration_truncated(enumerated, args, warnings):
+    """Warn when the repository list looks cut short.
+
+    A truncated enumeration is the worst failure this tool can have: the repos
+    past the cut are not "failed" (which the manifest records and exit 1
+    announces) - they are simply absent, indistinguishable from "not selected".
+    Every scan over the corpus then reports clean on repositories nobody ever
+    looked at. Cheap to warn about, expensive to discover later.
+    """
+    if enumerated >= args.limit:
+        msg = (f"enumeration returned {enumerated} repo(s), which is the --limit "
+               f"({args.limit}). The list is probably truncated and this corpus "
+               f"is probably incomplete. Re-run with a higher --limit.")
+        warnings.append(msg)
+        log(f"  WARNING: {msg}")
+    elif enumerated > 0 and enumerated % 100 == 0:
+        # gh pages at 100. Landing on an exact page boundary is either a
+        # coincidence or a cap, and the two are indistinguishable from here.
+        target = args.org or args.user or "<target>"
+        msg = (f"enumeration returned exactly {enumerated} repo(s), a multiple of "
+               f"the 100-per-page size gh uses. If {target} has more than that, the "
+               f"list was capped and this corpus is incomplete. Verify with: "
+               f"gh repo list {target} --limit {args.limit} --json name | jq length")
+        warnings.append(msg)
+        log(f"  NOTE: {msg}")
+
+
 # --------------------------------------------------------------------------
 # Selection
 # --------------------------------------------------------------------------
@@ -503,7 +530,13 @@ def main(argv=None):
         log(f"ERROR: {e}")
         return 2
 
+    # --limit means the same thing whatever the source, so the truncation guard
+    # below applies uniformly - and stays testable without a live gh.
+    if args.repos_json and len(repos) > args.limit:
+        repos = repos[:args.limit]
+
     enumerated = len(repos)
+    check_enumeration_truncated(enumerated, args, warnings)
     selected = select(repos, args, warnings)
     log(f"enumerated {enumerated}, selected {len(selected)}")
 

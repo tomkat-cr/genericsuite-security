@@ -133,6 +133,12 @@ and flipping the default is a one-line change.
 
 Every scanner built on this must carry these into its own report:
 
+- **A truncated repository list.** The worst one, because it cannot be
+  expressed as a failure: repos past the cut are not "failed", they are simply
+  absent, indistinguishable from "not selected". `build_corpus.py` warns into
+  `warnings[]` when the count hits `--limit`, or lands on an exact multiple of
+  the 100-per-page size `gh` uses. **Read `warnings[]` before trusting
+  `totals`.**
 - **Failed clones.** In the manifest with their error, counted in
   `totals.failed`. Exit `1` exists to make this impossible to miss.
 - **Empty repositories.** Recorded `status: "skipped"`, never dropped.

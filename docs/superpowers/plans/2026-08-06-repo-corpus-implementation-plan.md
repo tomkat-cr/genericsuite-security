@@ -422,16 +422,27 @@ assertions.
   is skipped rather than broken: it detects the locked directory and sets
   `clean_coverage` False.
 
+**Task 8's acceptance check, completed later on real hardware.** The
+implementing environment had no `gh` and single-repo GitHub scope, so the org
+run happened on the author's macOS machine (git 2.21, bash 3.2):
+`run_corpus.sh --org tomkat-cr --include prico` enumerated 100, cloned 5,
+complete corpus. Three bugs only that environment could surface:
+
+1. `git init -b main` — `-b` needs git 2.28; macOS ships what Xcode shipped.
+   The fixture silently produced non-repositories, and because
+   `make_source_repo` ignored exit status, one setup failure presented as five
+   unrelated assertion failures.
+2. The driver's `"${ARR[@]}"` on an empty array under `set -u` aborts on bash
+   3.2 — the exact macOS trap this package documents for the other scanners.
+   Worse, the resulting exit 1 was announced as "PARTIAL CORPUS".
+3. Enumeration returned exactly 100 — `gh`'s page size — with nothing warning
+   that the list might be capped.
+
+The lesson for phases 2 and 3: this package's target platform is macOS with
+decade-old system tooling, and a Linux CI green is not evidence about it.
+
 **Not verified here — carry into phase 2:**
 
-- **The real `tomkat-cr` org run (Task 8's acceptance check) was not performed.**
-  The implementing environment had no `gh` CLI, and its GitHub access was
-  scoped to a single repository, so org-wide enumeration was out of scope. What
-  *was* verified is the live HTTPS clone path end to end against
-  `tomkat-cr/genericsuite-security`: real clone, real branch/HEAD recording,
-  manifest, and walk. Enumeration is covered only via `--repos-json`. **Run
-  `./scripts/run_corpus.sh --org tomkat-cr` on a machine with authenticated
-  `gh` before trusting the enumeration path**, and reconcile the totals.
 - **The `--default-branch-only` cost measurement is a one-repo sample** (316 KB
   vs 236 KB, ~1.3x, no measurable time difference at depth 1) and is quoted as
   such in `SKILL.md`. The D6 scope-defaults decision was meant to be revisitable

@@ -330,6 +330,35 @@ def test_empty_repo_recorded(base):
           f"stdout={proc.stdout!r}")
 
 
+def test_enumeration_truncation(base):
+    """A capped repo list is the one incompleteness the manifest cannot express
+    as a failure: missing repos look exactly like unselected ones."""
+    pj = os.path.join(base, "many.json")
+    with open(pj, "w") as f:
+        json.dump([{"name": f"r{i}", "url": "", "defaultBranchRef": {"name": "main"},
+                    "isFork": False, "isArchived": False, "isEmpty": True,
+                    "stargazerCount": 0, "pushedAt": "2026-08-01T00:00:00Z",
+                    "visibility": "PUBLIC"} for i in range(5)], f)
+
+    out = os.path.join(base, "trunc")
+    proc = run([sys.executable, BUILD, "--org", "fixture", "--repos-json", pj,
+                "--out", out, "--limit", "5"])
+    m = json.load(open(os.path.join(out, "corpus.json")))
+    warned = any("truncated" in w for w in m.get("warnings", []))
+    check("hitting --limit warns that the corpus is probably incomplete",
+          warned, f"warnings: {m.get('warnings')} exit={proc.returncode}")
+    check("the truncation warning is recorded in the manifest, not just printed",
+          warned and "--limit" in " ".join(m.get("warnings", [])))
+
+    out2 = os.path.join(base, "notrunc")
+    run([sys.executable, BUILD, "--org", "fixture", "--repos-json", pj,
+         "--out", out2, "--limit", "50"])
+    m2 = json.load(open(os.path.join(out2, "corpus.json")))
+    check("a list comfortably under the limit does not warn",
+          not any("truncated" in w for w in m2.get("warnings", [])),
+          f"warnings: {m2.get('warnings')}")
+
+
 def test_local_mode(base):
     """--local: the path both scanners' lint mode depends on."""
     src = make_source_repo(os.path.join(base, "src-local"))
@@ -560,6 +589,7 @@ def main():
         test_failed_clone(base)
         test_branch_coverage(base)
         test_empty_repo_recorded(base)
+        test_enumeration_truncation(base)
         print("\nLocal mode")
         test_local_mode(base)
         print("\nWalking hostile input")
