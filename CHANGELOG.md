@@ -9,6 +9,7 @@ This project adheres to [Semantic Versioning](http://semver.org/) and [Keep a Ch
 ### Added
 - `repo-corpus` skill (phase 1 of the org-wide repository scanner design): enumerates an org or user via `gh`, clones with hardened flags, and emits a `corpus.json` manifest. Ships `scripts/_walk.py` (shared walking with prune counting and unreadable-path tracking) and a self-test that proves the clone hardening holds.
 - Design spec and phase 1 implementation plan under `docs/superpowers/`.
+- `repo-docker-scanner` skill (phase 2): detects mutable container image references across a corpus and prioritises them by execution context. Dockerfiles are parsed rather than grepped; YAML is read structurally by a stdlib-only indentation reader; passes deliberately overlap so a block scalar the structural reader skips is still covered by the raw-text pass. Emits `report.md`, `findings.json` and SARIF 2.1.0, with a checked-in baseline for accepted risk and `probe.py` for adversarial verification. The four historical grep-filter bugs from the source playbook are regression assertions.
 - `build_corpus.py --branch NAME` pins the corpus to one branch across every repository, checking it out as the working tree scanners walk. Repositories without that branch are recorded as `skipped` with a reason and summarised in `warnings[]`, never dropped and never counted as failures. Manifest entries gain `checked_out` (the branch on disk) alongside `default_branch` (the repository's own default).
 
 ### Changed

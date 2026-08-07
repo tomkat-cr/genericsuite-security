@@ -8,26 +8,41 @@ pick this work up without the original conversation.
 
 ## Start here
 
-Read the approved design, then the phase 1 plan's "Outcome" section (it records
-what shipped and, more importantly, what was *not* verified):
+Read the approved design, then the phase 2 plan's Outcome section:
 
 ```
 docs/superpowers/specs/2026-08-06-repo-scanner-skills-design.md
-docs/superpowers/plans/2026-08-06-repo-corpus-implementation-plan.md
+docs/superpowers/plans/2026-08-07-repo-docker-scanner-implementation-plan.md
 ```
 
-**Phase 1 is implemented.** `skills/repo-corpus/` exists and its self-test
-passes 31/31. Next is phase 2, `repo-docker-scanner`, which begins by consuming
-a corpus.
+**Phases 1 and 2 are implemented.** `repo-corpus` (54 assertions) and
+`repo-docker-scanner` (54 assertions) both pass their self-tests. Next is
+phase 3, `repo-packages-scanner`, which reuses every convention settled in
+phase 2 and absorbs `run_gh_scan.sh` from `supply-chain-ioc-scan`.
 
 Suggested opening prompt:
 
 > Read `docs/superpowers/specs/2026-08-06-repo-scanner-skills-design.md` and
-> `tmp/unpinned-image-detection-playbook.md`, then create an implementation
-> plan for phase 2, `repo-docker-scanner`.
+> `skills/repo-docker-scanner/`, then create an implementation plan for
+> phase 3, `repo-packages-scanner`.
 
-Phase 3 gets its own plan after that. Do not plan both at once — the spec's
-"Implementation sequencing" section explains why.
+## Do this first: calibrate the priority tiers
+
+Phase 2 shipped with its calibration run (plan Task 12) **not done** — the
+implementing environment had no `gh`. This is the open question the handoff has
+carried since the start, and it is now answerable with data rather than
+opinion:
+
+```bash
+cd skills/repo-docker-scanner
+./scripts/run_docker_scan.sh --org tomkat-cr --include prico
+```
+
+Read the tier histogram. If P0 lights up with dozens of findings on the first
+run, the boundary is wrong regardless of how defensible it looks — the gate
+gets switched off and the scanner becomes decoration. Retuning is a
+`policy/images.json` edit, never a code change. Then run `probe.py` with two or
+three image names you know are in use; every unexplained hit is a detector bug.
 
 ## Verified on real hardware
 

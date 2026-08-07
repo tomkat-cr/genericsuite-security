@@ -6,14 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `genericsuite-security` is a Claude Code **plugin** (see `.claude-plugin/marketplace.json`, plugin name `gs-security-suite`) that packages security-response skills for GenericSuite and its ecosystem. It is a submodule of the `genericsuite` monorepo — see `/Users/carlosramirez/desarrollo/genericsuite/CLAUDE.md` for cross-package conventions. This package has no application code of its own; it is entirely skills + supporting Python scripts invoked by those skills.
 
-The plugin currently ships two skills:
+The plugin currently ships three skills:
 
 - `skills/supply-chain-ioc-scan` — built in response to the Keyv/Cacheable npm supply-chain worm ("Shai-Hulud: Here We Go Again", disclosed 2026-08-04, see `CHANGELOG.md`). Answers "did this campaign touch this machine?"
-- `skills/repo-corpus` — turns an org, a user, or a local checkout into safe, attributable clones plus a `corpus.json` manifest. Produces **no findings**; it is the foundation the two planned scanners consume.
+- `skills/repo-corpus` — turns an org, a user, or a local checkout into safe, attributable clones plus a `corpus.json` manifest. Produces **no findings**; it is the foundation the scanners consume.
+- `skills/repo-docker-scanner` — consumes a corpus and reports mutable container-image references, tiered P0/P1/P2 by execution context.
 
 ## Work In Progress
 
-Two further skills are designed but not yet implemented: `repo-docker-scanner` and `repo-packages-scanner` (org-wide scanning for unpinned container images and dependencies). `repo-corpus` (phase 1) is implemented.
+One further skill is designed but not yet implemented: `repo-packages-scanner` (org-wide scanning for unpinned language dependencies), which also absorbs `run_gh_scan.sh`. Phases 1 (`repo-corpus`) and 2 (`repo-docker-scanner`) are implemented.
 
 **If you are picking this work up, read `docs/superpowers/HANDOFF.md` first** — it names the next concrete step, the decisions already made, and the open questions. The approved design is `docs/superpowers/specs/2026-08-06-repo-scanner-skills-design.md`.
 
@@ -46,6 +47,15 @@ Scan a GitHub user's repos for campaign-related indicators (requires `gh` CLI, a
 ```bash
 ./scripts/run_gh_scan.sh <username> [<keyword-regex> <since-date>]
 ```
+
+Scan a corpus for unpinned container images (from `skills/repo-docker-scanner/`):
+```bash
+./scripts/run_docker_scan.sh --org tomkat-cr     # builds a corpus, then scans
+./scripts/run_docker_scan.sh --local .           # CI lint mode, --fail-on P0
+python3 scripts/probe.py --corpus corpus.json --findings out/findings.json nginx
+python3 tests/selftest.py
+```
+Exit codes `0` clean at the threshold, `1` findings, `2` error. This skill imports `_walk.py` from `repo-corpus` by path, so the two must be installed side by side. Everything opinionated lives in `policy/images.json` — mutability boundary, priority rules, namespace flags; the scanner code is policy-agnostic.
 
 Build a repository corpus (from `skills/repo-corpus/`):
 ```bash
