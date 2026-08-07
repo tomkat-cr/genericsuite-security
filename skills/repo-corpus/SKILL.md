@@ -188,6 +188,19 @@ a failed clone leaves nothing under `repos/` and appears in the manifest with
 an error, that unsafe repo names are refused, that `--local` produces a valid
 manifest, and that symlinks cannot escape a walk root.
 
+**The self-test is hermetic, and its fixtures are checked.** It builds local
+git repositories to clone, with `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`
+neutralized and an isolated `HOME`, so your own git configuration cannot decide
+whether it passes — a global `core.hooksPath` would otherwise suppress the
+control hook and make the hardening assertion pass for the wrong reason. Every
+fixture command is checked, and a preflight builds one repository before any
+assertion runs: if the environment cannot produce a git repository at all, you
+get one clear "CANNOT BUILD TEST FIXTURES" message naming the failing git
+command, rather than five downstream assertions describing it badly. It also
+avoids `git init -b`, which needs git ≥ 2.28 — macOS ships whatever git came
+with Xcode, and this package already has scars from macOS shipping decade-old
+tooling.
+
 **A skipped assertion is not a passed one.** Running as root, the
 unreadable-path assertion cannot work — `chmod 000` does not block root — so it
 skips loudly and is excluded from the pass count rather than passing vacuously.

@@ -60,32 +60,93 @@ def run(argv, **kw):
     return subprocess.run(argv, capture_output=True, text=True, **kw)
 
 
-def git(*argv, cwd=None, env=None):
+class FixtureError(RuntimeError):
+    """The test fixture could not be built. Not a scanner failure - a setup one,
+    and it must be reported as such rather than as five mystery assertions."""
+
+
+# Filled in by main(): an isolated HOME so fixture git commands cannot be
+# affected by - or affect - the developer's global git configuration.
+_HERMETIC_HOME = None
+
+
+def git_env(extra=None):
+    """Environment for every fixture git command.
+
+    HERMETIC ON PURPOSE. The developer's own git config must not decide whether
+    this self-test passes. A global `core.hooksPath` would suppress the control
+    hook and make the hardening assertion pass for the wrong reason; a global
+    `commit.gpgsign` would break fixture commits; `init.templateDir` would plant
+    unexpected hooks. None of that is this test's subject.
+    """
     e = dict(os.environ)
-    e.update({
+    e.pop("GIT_TEMPLATE_DIR", None)
+    e.update(hermetic_overrides())
+    if extra:
+        e.update(extra)
+    return e
+
+
+def hermetic_overrides():
+    """The isolation keys, separable so they can be layered over clone_env()
+    (which copies os.environ and would otherwise restore the real HOME)."""
+    o = {
         "GIT_AUTHOR_NAME": "selftest", "GIT_AUTHOR_EMAIL": "selftest@example.com",
         "GIT_COMMITTER_NAME": "selftest", "GIT_COMMITTER_EMAIL": "selftest@example.com",
-    })
-    if env:
-        e.update(env)
-    return run(["git", *argv], cwd=cwd, env=e)
+        "GIT_CONFIG_NOSYSTEM": "1",          # every git version
+        "GIT_CONFIG_SYSTEM": os.devnull,     # git >= 2.32
+        "GIT_CONFIG_GLOBAL": os.devnull,     # git >= 2.32
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+    if _HERMETIC_HOME:                       # older git reads config via $HOME
+        o["HOME"] = _HERMETIC_HOME
+        o["XDG_CONFIG_HOME"] = _HERMETIC_HOME
+    return o
+
+
+def git(*argv, cwd=None, env=None, check=False):
+    proc = run(["git", *argv], cwd=cwd, env=git_env(env))
+    if check and proc.returncode != 0:
+        raise FixtureError(
+            f"`git {' '.join(argv)}` failed (exit {proc.returncode}) in {cwd}:\n"
+            f"  {(proc.stderr or proc.stdout or '').strip()}")
+    return proc
 
 
 def make_source_repo(path, extra_branch=None):
-    """A real local repo, cloneable over file://."""
+    """A real local repo, cloneable over file://.
+
+    Every step is checked. An unchecked fixture that quietly produces a
+    directory which is not a git repository turns one setup problem into five
+    unrelated-looking assertion failures - which is exactly what it did.
+
+    `git init -b main` is deliberately NOT used: -b arrived in git 2.28 (2020),
+    and macOS ships whatever git came with Xcode. This package already carries
+    scars from macOS shipping decade-old tooling (bash 3.2, see
+    supply-chain-ioc-scan). symbolic-ref works on every version.
+    """
     os.makedirs(path, exist_ok=True)
-    git("init", "--quiet", "-b", "main", cwd=path)
+    git("init", "--quiet", cwd=path, check=True)
+    git("symbolic-ref", "HEAD", "refs/heads/main", cwd=path, check=True)
     with open(os.path.join(path, "README.md"), "w") as f:
         f.write("# fixture\n")
-    git("add", "-A", cwd=path)
-    git("commit", "--quiet", "-m", "initial", cwd=path)
+    git("add", "-A", cwd=path, check=True)
+    git("-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "initial",
+        cwd=path, check=True)
     if extra_branch:
-        git("checkout", "--quiet", "-b", extra_branch, cwd=path)
+        git("checkout", "--quiet", "-b", extra_branch, cwd=path, check=True)
         with open(os.path.join(path, "second.txt"), "w") as f:
             f.write("second\n")
-        git("add", "-A", cwd=path)
-        git("commit", "--quiet", "-m", "second", cwd=path)
-        git("checkout", "--quiet", "main", cwd=path)
+        git("add", "-A", cwd=path, check=True)
+        git("-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "second",
+            cwd=path, check=True)
+        git("checkout", "--quiet", "main", cwd=path, check=True)
+
+    # Prove the fixture is what the rest of the file assumes it is, rather than
+    # letting a downstream clone failure explain it badly.
+    head = git("rev-parse", "HEAD", cwd=path)
+    if head.returncode != 0 or len(head.stdout.strip()) != 40:
+        raise FixtureError(f"fixture repo at {path} has no HEAD commit after setup")
     return path
 
 
@@ -111,19 +172,27 @@ def test_hooks_disabled(base):
     # CONTROL FIRST. Without this, assertion 1 passes whenever the fixture is
     # broken - which is the same failure mode the whole file exists to prevent.
     control_dest = os.path.join(base, "clone-control")
-    git("clone", "--quiet", f"file://{src}", control_dest,
-        env={"GIT_TEMPLATE_DIR": tpl})
+    proc = git("clone", "--quiet", f"file://{src}", control_dest,
+               env={"GIT_TEMPLATE_DIR": tpl})
     control_fired = os.path.exists(os.path.join(base, "CANARY-CONTROL"))
     check("control: an unhardened clone DOES run the planted post-checkout hook",
           control_fired,
-          "fixture is broken - the hook never ran, so assertion 1 proves nothing")
+          "the hook never ran, so the hardened assertion below proves nothing. "
+          f"clone exit={proc.returncode}: {(proc.stderr or '').strip()[:300]}")
 
-    # Now the hardened path, with the same hook template in scope.
+    # Now the hardened path, with the same hook template in scope. Same hermetic
+    # environment as the control, so the comparison isolates our flags and
+    # nothing else - a developer's global core.hooksPath must not be what makes
+    # this pass.
     tpl2 = make_hook_template(os.path.join(base, "tpl2"), os.path.join(base, "CANARY-HARDENED"))
     hardened_dest = os.path.join(base, "clone-hardened")
-    env = clone_env()
+    env = clone_env()                       # the environment under test
+    env.update(hermetic_overrides())        # layered on top: clone_env copies os.environ
     env["GIT_TEMPLATE_DIR"] = tpl2
-    run(clone_argv(f"file://{src}", hardened_dest), env=env)
+    proc = run(clone_argv(f"file://{src}", hardened_dest), env=env)
+    check("the hardened clone itself succeeded (otherwise the next assertion is vacuous)",
+          proc.returncode == 0 and os.path.isdir(hardened_dest),
+          f"exit={proc.returncode}: {(proc.stderr or '').strip()[:300]}")
     check("hardened clone does NOT run a post-checkout hook (core.hooksPath)",
           not os.path.exists(os.path.join(base, "CANARY-HARDENED")),
           "A HOOK EXECUTED DURING CLONE. Cloned repos are hostile input.")
@@ -190,6 +259,14 @@ def test_failed_clone(base):
           by_name.get("broken", {}).get("status") == "failed"
           and by_name["broken"].get("error"),
           f"entry: {by_name.get('broken')}")
+    # git's clone failure ends with boilerplate ("...and the repository
+    # exists."). Recording the LAST line captured exactly that and discarded the
+    # fatal: line saying what went wrong, producing manifests nobody could
+    # triage. The error must name the cause.
+    broken_err = by_name.get("broken", {}).get("error") or ""
+    check("the recorded error names the cause, not git's trailing boilerplate",
+          broken_err.startswith(("fatal:", "error:", "remote: ")),
+          f"error was: {broken_err!r}")
     check("a failed clone leaves nothing under repos/",
           not os.path.exists(os.path.join(out, "repos", "broken")))
     check("the staging directory is cleaned up",
@@ -396,8 +473,30 @@ def test_marketplace_paths():
 # ---------------------------------------------------------------------------
 
 def main():
+    global _HERMETIC_HOME
     print("repo-corpus self-test\n")
+
+    ver = run(["git", "--version"])
+    print(f"  {(ver.stdout or ver.stderr or 'git not found').strip()}"
+          f" | python {sys.version.split()[0]} | uid {os.geteuid()}\n")
+
     with tempfile.TemporaryDirectory(prefix="repo-corpus-selftest-") as base:
+        _HERMETIC_HOME = os.path.join(base, "hermetic-home")
+        os.makedirs(_HERMETIC_HOME, exist_ok=True)
+
+        # Build one fixture up front. If the environment cannot produce a git
+        # repository at all, that is a setup problem, and saying so once beats
+        # five downstream assertions failing in ways that describe it badly.
+        try:
+            make_source_repo(os.path.join(base, "preflight"))
+        except FixtureError as e:
+            print(f"  {RED}CANNOT BUILD TEST FIXTURES{RESET}\n")
+            print(f"  {e}\n")
+            print("  This is an environment problem, not a scanner failure: the")
+            print("  self-test could not create a local git repository to clone.")
+            print("  Nothing about the clone hardening was verified.")
+            return 1
+
         print("Clone hardening")
         test_hooks_disabled(base)
         test_clone_argv_flags()

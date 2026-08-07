@@ -176,6 +176,25 @@ def clone_argv(url, dest, default_branch_only=False):
     ]
 
 
+def git_error_summary(proc):
+    """The most useful line of a git failure, not the last one.
+
+    git's clone failures end with "Please make sure you have the correct access
+    rights / and the repository exists." - so taking the last line records
+    "and the repository exists." and throws away the `fatal:` line that says
+    what actually went wrong. A manifest full of that is a manifest that cannot
+    be triaged.
+    """
+    text = (proc.stderr or "").strip() or (proc.stdout or "").strip()
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return "git clone failed with no output"
+    for ln in lines:
+        if ln.startswith(("fatal:", "error:", "remote: ")):
+            return ln[:400]
+    return lines[-1][:400]
+
+
 def clone_env():
     env = os.environ.copy()
     env["GIT_LFS_SKIP_SMUDGE"] = "1"
@@ -274,7 +293,7 @@ def clone_one(repo, root, args):
             clone_argv(url, tmp, args.default_branch_only),
             capture_output=True, text=True, env=clone_env(), timeout=args.timeout)
         if proc.returncode != 0:
-            entry["error"] = (proc.stderr or proc.stdout or "git clone failed").strip().splitlines()[-1][:400]
+            entry["error"] = git_error_summary(proc)
             return entry
     except subprocess.TimeoutExpired:
         entry["error"] = f"timeout after {args.timeout}s"
