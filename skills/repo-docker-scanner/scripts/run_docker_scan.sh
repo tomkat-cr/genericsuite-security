@@ -17,6 +17,18 @@ set -uo pipefail
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CORPUS_SKILL="$(cd "$SKILL_DIR/../repo-corpus" 2>/dev/null && pwd || true)"
 
+# Capture the exact top-level invocation BEFORE any argument is consumed
+# below, so the report can state what actually produced it. POSIX single-quote
+# escaping done by hand (no bash arrays - see the file header) rather than
+# perfectly, since this is for a human reading a report, not for re-eval.
+DOCKER_SCAN_INVOKED_CMD="./scripts/run_docker_scan.sh"
+for _a in "$@"; do
+  _q="$(printf '%s' "$_a" | sed "s/'/'\\\\''/g")"
+  DOCKER_SCAN_INVOKED_CMD="$DOCKER_SCAN_INVOKED_CMD '$_q'"
+done
+export DOCKER_SCAN_INVOKED_CMD
+unset _a _q
+
 command -v python3 >/dev/null || { echo "python3 required" >&2; exit 2; }
 
 if [ $# -eq 0 ]; then

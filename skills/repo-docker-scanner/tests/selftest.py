@@ -188,10 +188,17 @@ Resources:
     return mpath
 
 
-def run_scan(corpus, out, extra=()):
+def run_scan(corpus, out, extra=(), env_overrides=None):
     argv = [sys.executable, os.path.join(SCRIPTS, "scan_images.py"),
             "--corpus", corpus, "--out", out, "--sarif", *extra]
-    proc = subprocess.run(argv, capture_output=True, text=True)
+    env = dict(os.environ)
+    # Deterministic unless a test opts in: if this self-test were itself run
+    # via run_docker_scan.sh, DOCKER_SCAN_INVOKED_CMD would already be set in
+    # the environment and silently short-circuit the argv-fallback path below.
+    env.pop("DOCKER_SCAN_INVOKED_CMD", None)
+    if env_overrides:
+        env.update(env_overrides)
+    proc = subprocess.run(argv, capture_output=True, text=True, env=env)
     path = os.path.join(out, "findings.json")
     data = json.load(open(path)) if os.path.isfile(path) else {}
     return proc, data
@@ -435,6 +442,50 @@ def test_report_shape(data, out, proc):
               for f in data["findings"]), "bitnamilegacy was not flagged")
 
 
+def test_scan_command_and_repos_analyzed(corpus, base, data, out):
+    # Fallback path: scan_images.py run directly, no DOCKER_SCAN_INVOKED_CMD.
+    check("findings.json records a reconstructed scan command when run directly",
+          bool(data.get("scan_command"))
+          and "scan_images.py" in data["scan_command"]
+          and "--corpus" in data["scan_command"],
+          f"scan_command={data.get('scan_command')!r}")
+
+    md = open(os.path.join(out, "report.md"), encoding="utf-8").read()
+    check("report.md has a 'Scan command' section right after the summary, "
+          "before 'Policy applied'",
+          "## Scan command" in md
+          and md.index("## Scan command") < md.index("## Policy applied"),
+          "section missing or out of order")
+    check("the reconstructed command appears in the report's command block",
+          bool(data.get("scan_command")) and data["scan_command"] in md,
+          f"command: {data.get('scan_command')!r}")
+
+    # The fixture manifest declares repo "fixture" checked out on "main" at a
+    # HEAD of all zeros (tests/selftest.py's build_fixture).
+    check("findings.json lists which repo/branch/commit was actually analyzed",
+          any(r["repo"] == "fixture" and r["branch"] == "main"
+              and (r["head"] or "").startswith("0" * 12)
+              for r in data.get("repos_analyzed", [])),
+          f"repos_analyzed={data.get('repos_analyzed')}")
+    check("report.md's 'Repositories and branches analyzed' section lists it too",
+          "## Repositories and branches analyzed" in md
+          and "fixture" in md.split("## Repositories and branches analyzed")[1]
+                             .split("## Policy applied")[0]
+          and "main" in md.split("## Repositories and branches analyzed")[1]
+                          .split("## Policy applied")[0],
+          "repo/branch missing from the markdown section")
+
+    # DOCKER_SCAN_INVOKED_CMD (set by run_docker_scan.sh before it rewrites
+    # $@) must take precedence over the argv fallback - it is the only way the
+    # report can show the top-level command a user actually typed, since --org/
+    # --include/--branch never reach scan_images.py's own argv at all.
+    out2 = os.path.join(base, "out-invoked-cmd")
+    fake_cmd = "./scripts/run_docker_scan.sh --org tomkat-cr --include prico --branch develop"
+    _, data2 = run_scan(corpus, out2, env_overrides={"DOCKER_SCAN_INVOKED_CMD": fake_cmd})
+    check("DOCKER_SCAN_INVOKED_CMD from the driver overrides the argv fallback",
+          data2.get("scan_command") == fake_cmd, f"got {data2.get('scan_command')!r}")
+
+
 def test_baseline(corpus, base, data):
     fp = next(f["fingerprint"] for f in data["findings"]
               if f["reference"] == "nginx:latest")
@@ -498,6 +549,8 @@ def main():
         test_self_exclusion(base, corpus)
         print("\nReport shape")
         test_report_shape(data, out, proc)
+        print("\nScan command and repos analyzed")
+        test_scan_command_and_repos_analyzed(corpus, base, data, out)
         print("\nBaseline and thresholds")
         test_baseline(corpus, base, data)
         test_fail_on(corpus, base)

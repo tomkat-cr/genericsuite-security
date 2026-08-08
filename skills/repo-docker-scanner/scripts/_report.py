@@ -35,22 +35,29 @@ def _fmt_flags(f):
 
 
 def write_all(out, active, all_findings, inventory, unparsed, stats, manifest,
-              policy, scanned, skipped, args, version, watchlist=None, excluded=None):
+              policy, scanned, skipped, args, version, watchlist=None,
+              excluded=None, analyzed=None, scan_command=None):
     watchlist = watchlist or {}
     excluded = excluded or []
+    analyzed = analyzed or []
     _write_json(out, active, all_findings, inventory, unparsed, stats, manifest,
-                policy, scanned, skipped, version, watchlist, excluded)
+                policy, scanned, skipped, version, watchlist, excluded,
+                analyzed, scan_command)
     _write_md(out, active, all_findings, inventory, unparsed, stats, manifest,
-              policy, scanned, skipped, args, watchlist, excluded)
+              policy, scanned, skipped, args, watchlist, excluded, analyzed,
+              scan_command)
     if getattr(args, "sarif", False):
         _write_sarif(out, active, version)
 
 
 def _write_json(out, active, all_findings, inventory, unparsed, stats, manifest,
-                policy, scanned, skipped, version, watchlist, excluded):
+                policy, scanned, skipped, version, watchlist, excluded,
+                analyzed, scan_command):
     payload = {
         "schema_version": 1,
         "generator": f"repo-docker-scanner/scan_images.py {version}",
+        "scan_command": scan_command,
+        "repos_analyzed": analyzed,
         "corpus": {"root": manifest.get("root"),
                    "generated_at": manifest.get("generated_at"),
                    "source": manifest.get("source"),
@@ -90,7 +97,8 @@ def _write_json(out, active, all_findings, inventory, unparsed, stats, manifest,
 
 
 def _write_md(out, active, all_findings, inventory, unparsed, stats, manifest,
-              policy, scanned, skipped, args, watchlist, excluded):
+              policy, scanned, skipped, args, watchlist, excluded, analyzed,
+              scan_command):
     L = []
     a = L.append
     a("# Unpinned container images")
@@ -104,6 +112,38 @@ def _write_md(out, active, all_findings, inventory, unparsed, stats, manifest,
     counts = {t: sum(1 for f in active if f['priority'] == t) for t in TIERS}
     a(f"- Findings: **P0 {counts['P0']} · P1 {counts['P1']} · P2 {counts['P2']}**"
       f" ({len(all_findings) - len(active)} baselined)")
+    a("")
+
+    if scan_command:
+        a("## Scan command")
+        a("")
+        a("The exact command that produced this report. Filters resolved into "
+          "the corpus (org/user/local, --include, --branch, --default-branch-only) "
+          "live in the corpus this scan consumed; see 'Repositories and branches "
+          "analyzed' below and `corpus.source` in `findings.json` for what they "
+          "resolved to.")
+        a("")
+        a(f"```\n{scan_command}\n```")
+        a("")
+
+    a("## Repositories and branches analyzed")
+    a("")
+    if analyzed:
+        a("Every clean statement in this report is scoped to exactly these "
+          "repositories, on exactly these branches, at exactly these commits — "
+          "not to the org, and not to any other branch. See 'Repositories NOT "
+          "scanned' below for what this excludes.")
+        a("")
+        a("| Repo | Branch | HEAD |")
+        a("|---|---|---|")
+        cap = 200
+        for r in sorted(analyzed, key=lambda x: x["repo"])[:cap]:
+            head = (r["head"] or "")[:12] or "—"
+            a(f"| {r['repo']} | {r['branch'] or '—'} | `{head}` |")
+        if len(analyzed) > cap:
+            a(f"| …and {len(analyzed) - cap} more | | (see findings.json) |")
+    else:
+        a("None — see 'Repositories NOT scanned' below for why.")
     a("")
 
     a("## Policy applied")

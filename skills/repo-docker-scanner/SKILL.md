@@ -51,6 +51,24 @@ Exit `0` no findings at the threshold, `1` findings, `2` error.
 This skill consumes a corpus from `repo-corpus` and shares its `_walk.py` by
 path rather than by copy — install both side by side.
 
+Right after the summary, `report.md` states **exactly** what produced it:
+
+- **Scan command** — the literal top-level command, e.g.
+  `./scripts/run_docker_scan.sh --org tomkat-cr --include prico --branch develop`.
+  Captured by `run_docker_scan.sh` before it consumes or rewrites any argument
+  (`--org`/`--include`/`--branch` never reach `scan_images.py`'s own argv —
+  they get resolved into a `--corpus` path first), so it shows what a human
+  actually typed rather than the internal `--corpus … --sarif` call. Running
+  `scan_images.py` directly reconstructs its own argv instead.
+- **Repositories and branches analyzed** — every repo, branch, and HEAD SHA the
+  scan actually walked. Every "no findings" statement in the report is scoped
+  to exactly this list, never to the org — a `--branch`-filtered corpus (or
+  `--include`) can mean the scan covered one repo out of forty, and a reader
+  should not have to open `corpus.json` to find that out.
+
+Both are also in `findings.json` as `scan_command` and `repos_analyzed`, for
+anything consuming the JSON directly.
+
 ## What Counts as Unpinned
 
 | Reference | Class | Mutable |

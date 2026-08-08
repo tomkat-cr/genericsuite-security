@@ -21,6 +21,7 @@ import hashlib
 import re
 import json
 import os
+import shlex
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -61,6 +62,23 @@ PRUNE = {".git", ".hg", ".svn", "node_modules", "vendor", "__pycache__",
 
 def log(msg):
     print(msg, file=sys.stderr)
+
+
+def scan_command():
+    """The command that produced this report, for the report itself.
+
+    Prefers DOCKER_SCAN_INVOKED_CMD, which run_docker_scan.sh exports as the
+    exact top-level invocation before it consumes or rewrites any argument
+    (--org/--include/--branch get resolved into a --corpus path long before
+    scan_images.py ever runs, so this script's own argv alone would show only
+    the internal `--corpus ... --sarif` call and lose the command a human
+    actually typed). Falls back to reconstructing this script's own argv when
+    run directly, which is still accurate for that case.
+    """
+    env_cmd = os.environ.get("DOCKER_SCAN_INVOKED_CMD")
+    if env_cmd:
+        return env_cmd
+    return shlex.join([os.path.basename(sys.argv[0])] + sys.argv[1:])
 
 
 def load_policy(path):
@@ -138,7 +156,7 @@ def scan_corpus(manifest, policy, args):
     root = manifest["root"]
     findings, inventory, unparsed, watchlist, excluded = [], {}, [], {}, []
     stats_total = _walk.WalkStats()
-    scanned_repos, skipped_repos = 0, []
+    scanned_repos, skipped_repos, analyzed_repos = 0, [], []
 
     for entry in manifest.get("repos", []):
         if entry["status"] not in ("cloned", "local"):
@@ -149,6 +167,17 @@ def scan_corpus(manifest, policy, args):
             skipped_repos.append((entry["name"], "missing", f"not on disk: {repo_path}"))
             continue
         scanned_repos += 1
+        # What a "clean" verdict actually covers: which repo, on which branch,
+        # at which commit. Without this, "3 findings" reads as a statement
+        # about the org when it may be a statement about one branch of one
+        # repo (see --branch in repo-corpus, which is exactly what narrowed
+        # this to 1-of-5 in the run that prompted this section).
+        analyzed_repos.append({
+            "repo": entry["name"],
+            "branch": entry.get("checked_out") or entry.get("default_branch"),
+            "head": entry.get("head"),
+            "path": entry.get("path"),
+        })
 
         for abspath, relpath in _walk.walk_files(repo_path, prune=PRUNE,
                                                  stats=stats_total):
@@ -238,7 +267,7 @@ def scan_corpus(manifest, policy, args):
     deduped = list(seen.values())
 
     return (deduped, inventory, unparsed, stats_total, scanned_repos,
-            skipped_repos, watchlist, excluded)
+            skipped_repos, watchlist, excluded, analyzed_repos)
 
 
 def main(argv=None):
@@ -280,7 +309,7 @@ def main(argv=None):
     os.makedirs(out, exist_ok=True)
 
     (findings, inventory, unparsed, stats, scanned, skipped,
-     watchlist, excluded) = scan_corpus(manifest, policy, args)
+     watchlist, excluded, analyzed) = scan_corpus(manifest, policy, args)
 
     baseline = load_baseline(args.baseline)
     for f in findings:
@@ -296,7 +325,7 @@ def main(argv=None):
 
     _report.write_all(out, active, findings, inventory, unparsed, stats,
                       manifest, policy, scanned, skipped, args, VERSION,
-                      watchlist, excluded)
+                      watchlist, excluded, analyzed, scan_command())
 
     counts = {t: sum(1 for f in active if f["priority"] == t) for t in TIERS}
     log(f"scanned {scanned} repo(s), {stats.files_seen} file(s)")
