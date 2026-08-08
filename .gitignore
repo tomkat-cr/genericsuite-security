@@ -224,3 +224,6 @@ node_modules/
 # Generic Suite
 
 tmp/
+
+# Git worktrees (subagent-driven-development isolated workspaces)
+.worktrees/
