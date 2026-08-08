@@ -7,6 +7,20 @@ This project adheres to [Semantic Versioning](http://semver.org/) and [Keep a Ch
 ## [Unreleased] - YYYY-MM-DD
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Security
+
+
+## [1.0.0] - 2026-08-05
+
+### Added
+- Project ideation and initial development as a response to the Keyv and Cacheable NPM supply chain attack [GS-339].
 - `repo-docker-scanner --resolve`: resolves an unpinned tag to its real digest via an anonymous registry bearer token (stdlib `urllib` only, no docker/skopeo dependency), producing a copy-pasteable `image:tag@sha256:…` suggestion per finding. Registry-agnostic - parses each registry's own `WWW-Authenticate` challenge rather than hardcoding Docker Hub's realm, verified live against both Docker Hub and ghcr.io. Opt-in, never required; a resolution failure is recorded per finding and never suppresses it. Completes the design spec's "Opt-in resolution" section, which called for this in both scanners but only `repo-packages-scanner` had it.
 - `repo-packages-scanner` skill (phase 3, completing the org-wide repository scanner design): detects unpinned GitHub Actions (`uses:` not pinned to a 40-hex commit SHA, including `docker://` and reusable-workflow calls), floating npm/PyPI/Poetry/PEP-621 ranges, missing lockfiles, `npm install`/`yarn install` used in CI instead of `npm ci`, `curl | bash` and other unpinned remote code execution, and Go/Rust/Ruby pinning gaps. Ships `report.md`, `findings.json`, and SARIF 2.1.0, all three built from the start with the scan command that produced them, the exact repos/branches/commits analyzed, and a P0/P1/P2 legend GENERATED from `policy/packages.json`'s `priority_rules` rather than hand-written prose. `--resolve` optionally enriches unpinned Actions with owner/archived status via `gh api` - network, opt-in, never required. Absorbs `run_gh_scan.sh`, moved unchanged from `supply-chain-ioc-scan` per the design spec's explicit decision.
 - `repo-docker-scanner` report.md now states, right after the summary, the exact command that produced it and the full list of repositories/branches/HEAD commits actually analyzed (also in findings.json as `scan_command` and `repos_analyzed`). `--org`/`--include`/`--branch` are resolved into a corpus path before scan_images.py ever sees them, so run_docker_scan.sh captures the top-level invocation before it rewrites any argument; running scan_images.py directly falls back to reconstructing its own argv.
@@ -28,15 +42,7 @@ This project adheres to [Semantic Versioning](http://semver.org/) and [Keep a Ch
 - Clone failures recorded git's trailing boilerplate rather than the line naming the cause.
 - `.claude-plugin/marketplace.json` registered `./skills/supply-chain-security`, a path that does not exist; corrected to `./skills/supply-chain-ioc-scan`. A self-test assertion now fails if any registered skill path is missing from disk.
 
-### Removed
-
 ### Security
 - `build_corpus.py` warns when the repository list may be truncated (count hits `--limit`, or lands on an exact multiple of gh's 100-per-page size). A capped list is the one incompleteness a manifest cannot express as a failure: missing repos are indistinguishable from unselected ones.
 - The self-test is hermetic with respect to the developer's git configuration; a global `core.hooksPath` would otherwise have made the central hook-hardening assertion pass for the wrong reason.
 - Cloned repositories are treated as hostile input: hooks, LFS smudge/process filters and interactive credential prompts are disabled at clone time; clones are staged and promoted only on success; repository names are validated before use as path components; and file walking never follows a symlink out of its root.
-
-
-## [1.0.0] - 2026-08-05
-
-### Added
-- Project ideation and initial development as a response to the Keyv and Cacheable NPM supply chain attack [GS-339].

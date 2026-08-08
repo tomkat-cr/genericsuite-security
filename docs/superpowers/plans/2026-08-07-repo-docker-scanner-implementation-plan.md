@@ -3,7 +3,7 @@
 **Date:** 2026-08-07
 **Status:** Ready to implement
 **Spec:** `docs/superpowers/specs/2026-08-06-repo-scanner-skills-design.md`
-**Source playbook:** `tmp/unpinned-image-detection-playbook.md`
+**Source playbook:** `tmp/unpinned-image-investigation.md`
 **Depends on:** phase 1 (`repo-corpus`), complete
 
 Phase 3 (`repo-packages-scanner`) is out of scope and gets its own plan.

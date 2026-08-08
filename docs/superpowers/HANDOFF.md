@@ -275,7 +275,7 @@ mistakes if you meet them without context:
   standalone, you get this package's `CLAUDE.md` but not the monorepo-wide one
   at the superproject root. Everything phase 1 needs is package-local.
 - The source material for `repo-docker-scanner` is
-  `tmp/unpinned-image-detection-playbook.md` (tracked in git, so it travels with
+  `tmp/unpinned-image-investigation.md` (tracked in git, so it travels with
   the repo). Phase 2 is essentially an implementation of that playbook,
   including its false-positive catalogue and the four grep-filter bugs it
   documents — those become regression assertions, not prose.
