@@ -76,9 +76,15 @@ And one carried over in adapted form:
 
 ## Scope
 
+**No database is required.** Four of the five input modes (`--root`,
+`--projects`, `--corpus`, `--org`) involve no database at all, and `--db` is a
+purely optional fifth way to obtain the project list. Every output is a file
+under `./insights`; nothing is ever written to a database, and the analysis
+itself has no database dependency in any mode.
+
 **In scope:** discovering projects under a root directory or an explicit list;
-enumerating them read-only from a Supabase/Postgres table and joining its
-metadata; deterministic per-project signal collection; a deterministic
+optionally enumerating them read-only from a Supabase/Postgres table and joining
+its metadata; deterministic per-project signal collection; a deterministic
 secret-candidate scan; reuse of `repo-docker-scanner` and
 `repo-packages-scanner` findings as evidence; two AI scoring axes
 (production-readiness and security risk) reported independently; a re-audit loop
@@ -266,7 +272,13 @@ Rules, each preventing a specific wrong answer:
 - **`--list-only` prints what would be analyzed and exits `0`** without building
   anything, so scope can be checked before committing to a large run.
 
-### Input mode: `--db` (Supabase / Postgres, read-only)
+### Input mode: `--db` (Supabase / Postgres, read-only, entirely optional)
+
+**This mode is optional and nothing else depends on it.** It exists only for
+teams whose project list already lives in a table. Skip it and the skill is
+fully functional through `--root`, `--projects`, `--corpus`, or `--org`; no
+Supabase credentials, no `psql`, no network call. The self-test does not require
+a database either — it runs against a saved payload.
 
 `db_collect.py` replaces `extract-repos.ts` and `export-meta.ts`, which together
 read a `projects` table, derived one GitHub URL per row from a fallback chain of
