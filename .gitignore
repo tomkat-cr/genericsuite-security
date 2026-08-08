@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Node
+
+node_modules/
+
+# Generic Suite
+
+tmp/
