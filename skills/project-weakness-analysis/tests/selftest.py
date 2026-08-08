@@ -89,6 +89,67 @@ def test_marketplace_registration():
               os.path.isdir(os.path.join(PACKAGE_ROOT, rel)))
 
 
+def build_discovery_fixture(base):
+    """A root holding: a normal project, a monorepo, a nested node_modules trap."""
+    write(os.path.join(base, "alpha", "package.json"), '{"name":"alpha"}')
+    write(os.path.join(base, "alpha", "node_modules", "dep", "package.json"), '{"name":"dep"}')
+    write(os.path.join(base, "beta", "pyproject.toml"), "[project]\nname='beta'\n")
+    write(os.path.join(base, "mono", "frontend", "package.json"), '{"name":"fe"}')
+    write(os.path.join(base, "mono", "backend", "pyproject.toml"), "[project]\nname='be'\n")
+    os.makedirs(os.path.join(base, "mono", ".git"), exist_ok=True)
+    write(os.path.join(base, "notaproject", "README.md"), "# just docs\n")
+    return base
+
+
+def test_discovery():
+    import tempfile
+    import discover_projects
+    policy = _policy.load_policy()
+    with tempfile.TemporaryDirectory() as base:
+        build_discovery_fixture(base)
+        found, stats = discover_projects.discover(base, policy)
+        names = sorted(os.path.basename(p) for p in found)
+        check("finds every marker-bearing project", names == ["alpha", "beta", "mono"],
+              "got %s" % names)
+        check("a package.json inside node_modules is not a project",
+              not any("node_modules" in p for p in found))
+        check("a directory with no marker is not a project", "notaproject" not in names)
+
+        split, _ = discover_projects.discover(base, policy, split_monorepo=True)
+        split_names = sorted(os.path.basename(p) for p in split)
+        check("--split-monorepo yields the subdirectories",
+              "frontend" in split_names and "backend" in split_names,
+              "got %s" % split_names)
+
+        shallow, sstats = discover_projects.discover(base, policy, max_depth=0)
+        check("max_depth=0 finds nothing under the root", shallow == [])
+        check("depth truncation is recorded", sstats.truncated is not None)
+
+        capped, cstats = discover_projects.discover(base, policy, limit=1)
+        check("--limit caps the list", len(capped) == 1)
+        check("--limit truncation is recorded", cstats.truncated is not None)
+
+
+def test_discovery_symlink_escape():
+    import tempfile
+    import discover_projects
+    policy = _policy.load_policy()
+    with tempfile.TemporaryDirectory() as outside:
+        write(os.path.join(outside, "secret", "package.json"), "{}")
+        with tempfile.TemporaryDirectory() as base:
+            write(os.path.join(base, "real", "package.json"), "{}")
+            link = os.path.join(base, "escape")
+            try:
+                os.symlink(os.path.join(outside, "secret"), link)
+            except (OSError, NotImplementedError):
+                skip("symlinks cannot escape the discovery root", "symlink unsupported here")
+                return
+            found, _ = discover_projects.discover(base, policy)
+            check("symlinks cannot escape the discovery root",
+                  all(os.path.realpath(p).startswith(os.path.realpath(base)) for p in found),
+                  "got %s" % found)
+
+
 def main():
     print("Policy and profiles")
     test_policy_loads()
@@ -96,6 +157,10 @@ def main():
     test_redaction()
     print("\nRegistration")
     test_marketplace_registration()
+
+    print("\nDiscovery")
+    test_discovery()
+    test_discovery_symlink_escape()
 
     passed = sum(1 for _, ok in results if ok)
     total = len(results)
