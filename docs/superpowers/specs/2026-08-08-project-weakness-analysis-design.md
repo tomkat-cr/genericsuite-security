@@ -56,28 +56,44 @@ Three things were deliberately dropped or replaced:
   readiness", the marketing one-line pitch, and the
   `spotlight`/`promote`/`deprioritize` tiers are promotional concerns, not
   production-safety ones. Removed entirely.
-- **The DB-driven collector** (`extract-repos.ts`, `export-meta.ts`,
-  `backfill-insights.ts`) — bound to a specific Supabase `projects` table.
-  Replaced by local project discovery plus the existing `repo-corpus`.
+- **`backfill-insights.ts`'s write path.** The upsert into a `project_insights`
+  table is replaced by a flat projection written into `./insights` — see
+  "Flat projection" under Output. The row shape is deliberately identical to
+  the original table's columns, so adding a real DB upsert later is an isolated
+  addition rather than a redesign. The skill writes nothing outside its own
+  output tree.
 - **The `Workflow` tool** (`pipeline()` / `agent()` in the `.workflow.js`
   files) — a proprietary orchestration primitive not available here. Replaced
   by the task-manifest contract described under "Agent dispatch" below.
 
+And one carried over in adapted form:
+
+- **The DB-driven collector** (`extract-repos.ts`, `export-meta.ts`) is kept as
+  a **read-only** fifth input mode. The originals ran under `bun` with Drizzle
+  over `DATABASE_URL`, which this package cannot do — no Node toolchain, no
+  Python DB driver. Reimplemented over Supabase's PostgREST endpoint using
+  stdlib `urllib`, with a `psql` fallback. See "Input mode: `--db`".
+
 ## Scope
 
 **In scope:** discovering projects under a root directory or an explicit list;
-deterministic per-project signal collection; a deterministic secret-candidate
-scan; reuse of `repo-docker-scanner` and `repo-packages-scanner` findings as
-evidence; two AI scoring axes (production-readiness and security risk) reported
-independently; a re-audit loop against the previous run; Markdown, JSON, and
-SARIF output under `./insights`; a CI gate with configurable thresholds; an
-optional policy profile for GenericSuite house rules.
+enumerating them read-only from a Supabase/Postgres table and joining its
+metadata; deterministic per-project signal collection; a deterministic
+secret-candidate scan; reuse of `repo-docker-scanner` and
+`repo-packages-scanner` findings as evidence; two AI scoring axes
+(production-readiness and security risk) reported independently; a re-audit loop
+against the previous run; Markdown, JSON, CSV, and SARIF output under
+`./insights`; a CI gate with configurable thresholds; an optional policy profile
+for GenericSuite house rules.
 
 **Out of scope for v1:** running or building any scanned project; executing its
 tests; fetching live demos; opening fix branches or pull requests; writing
-anything inside a scanned project; any network call other than what
-`repo-corpus` makes to clone (`--org` mode) and what the security agent makes
-via `gh` to check a tracking issue's state.
+anything inside a scanned project; **any database write** — the DB connection is
+read-only in both directions of the design, and the results projection that the
+source pipeline upserted into `project_insights` is written to `./insights`
+instead; any network call other than the DB read, what `repo-corpus` makes to
+clone (`--org` mode), and what the security agent makes via `gh` to check a
+tracking issue's state.
 
 ## Prior art in this package
 
@@ -128,9 +144,10 @@ in the pipeline averages them into a single number.
 ### Data flow
 
 ```
---root ~/dev  |  --projects A B C  |  --corpus PATH  |  --org NAME
+--root ~/dev | --projects A B C | --corpus PATH | --org NAME | --db
         │
-        │  discover_projects.py (only for --root)
+        │  discover_projects.py  (--root only)
+        │  db_collect.py         (--db only, read-only)
         ▼
    build_corpus.py  (from repo-corpus)
         ▼
@@ -160,7 +177,44 @@ insights/WEAKNESS-REPORT.md
 insights/findings.sarif
 ```
 
-## Input: four ways in, one contract out
+### Components
+
+```
+skills/project-weakness-analysis/
+  SKILL.md
+  references/
+    methodology.md              adapted from tmp/ (which is gitignored)
+    project-insights.sql        CREATE TABLE for the flat projection; never run
+  policy/
+    weakness.json               project_markers, readiness_rules, readiness_order,
+                                severity_order, gate_defaults, dispatch.max_parallel,
+                                secret patterns + benign exclusions, table_columns,
+                                db_source
+    profiles/generic.json       default, framework-neutral
+    profiles/genericsuite.json  scrypt-only, {error,error_message,resultset},
+                                parameterized SQL, is_safe_url/is_safe_local_path
+  scripts/
+    run_weakness_analysis.sh    driver: phases, gate, exit codes, redacted
+                                scan-command capture
+    discover_projects.py        root dir → project dirs, via project_markers
+    db_collect.py               PostgREST / psql reader, URL extraction, metadata
+    collect_signals.py          deterministic per-project facts
+    _secrets.py                 regex secret candidates, offline, tiered
+    _siblings.py                runs repo-docker-scanner / repo-packages-scanner
+    build_tasks.py              emits agents/tasks.json
+    merge_insights.py           schema validation, verdict derivation, re-audit
+    gen_report.py               WEAKNESS-REPORT.md, flat projection, CSV, SARIF
+    _schemas.py                 the two agent schemas, single source of truth
+  tests/
+    selftest.py
+    fixtures/                   three synthetic projects, agent-output fixtures,
+                                a saved DB payload for --db-rows-json
+```
+
+`_walk.py` is imported from `repo-corpus` by path, exactly as the two sibling
+scanners already do — the three skills must be installed side by side.
+
+## Input: five ways in, one contract out
 
 Every input mode resolves to a `corpus.json` with `schema_version: 1` — the
 same manifest `repo-docker-scanner` and `repo-packages-scanner` already consume.
@@ -173,9 +227,10 @@ path rather than two implementations that drift apart.
 | `--projects A B C` | Explicit list → `build_corpus.py --local A B C` |
 | `--corpus PATH` | Use an existing manifest as-is |
 | `--org NAME` / `--user NAME` | `build_corpus.py --org/--user` — clones, with `repo-corpus`'s hardening |
+| `--db` | Read a projects table, extract one GitHub URL per row, then clone as `--org` does |
 
 Exactly one input mode may be given; the driver errors with exit `2` otherwise.
-If no input flag is given at all, the driver prints the four options and exits
+If no input flag is given at all, the driver prints the five options and exits
 `2` rather than guessing — a scan of the wrong tree is worse than no scan.
 
 ### `discover_projects.py`
@@ -210,6 +265,88 @@ Rules, each preventing a specific wrong answer:
   way; the warning is inherited rather than rediscovered.
 - **`--list-only` prints what would be analyzed and exits `0`** without building
   anything, so scope can be checked before committing to a large run.
+
+### Input mode: `--db` (Supabase / Postgres, read-only)
+
+`db_collect.py` replaces `extract-repos.ts` and `export-meta.ts`, which together
+read a `projects` table, derived one GitHub URL per row from a fallback chain of
+columns, and exported the remaining columns as per-project metadata. Both ran
+under `bun` with Drizzle over `DATABASE_URL`; neither approach is available in a
+stdlib-Python package.
+
+**Transport, in order of preference:**
+
+1. **Supabase PostgREST** over stdlib `urllib` — `SUPABASE_URL` plus
+   `SUPABASE_SERVICE_ROLE_KEY` or `SUPABASE_ANON_KEY`. Issues `GET
+   /rest/v1/<table>?select=…` and nothing else. No dependency, works from
+   anywhere.
+2. **`psql`** — used only when no Supabase env vars are set and `psql` is on
+   `PATH`, reading `DATABASE_URL`. Every query runs inside `BEGIN; SET
+   TRANSACTION READ ONLY;`, so the read-only guarantee is enforced by the
+   database rather than by the query text.
+
+If neither is configured, the driver exits `2` naming exactly which environment
+variables it looked for. It never falls back to scanning something else.
+
+**Credentials come from the environment only, never from a flag.** The report
+captures the literal scan command, so a connection string passed as an argument
+would be written into a file people share. As defence in depth, the captured
+command is redacted regardless: anything matching a `postgres://` /
+`postgresql://` URI, or the value of an argument whose name contains `key`,
+`token`, `secret`, `password`, or `url`, becomes `<redacted>`. The self-test
+asserts a connection string cannot reach the report.
+
+**Schema mapping is configuration, not code.** `--db-config PATH` loads a JSON
+file; `policy/weakness.json`'s `db_source` block holds the default, whose shape
+matches the source pipeline's table:
+
+```json
+{
+  "table": "projects",
+  "slug_column": "slug",
+  "name_column": "name",
+  "repo_url_columns": ["contribute_in_url", "project_url", "description_markdown"],
+  "metadata_columns": ["lifecycle_status", "status", "project_url", "video_url",
+                       "countries", "participant_name", "description_markdown"],
+  "filter": null,
+  "page_size": 1000
+}
+```
+
+**Repo-URL extraction** follows the original heuristic exactly: the first
+`https?://github.com/…` match in each of `repo_url_columns` in order, trailing
+punctuation (`.,);`) stripped, then normalized by lowercasing and dropping a
+trailing `.git` or `/` for deduplication. The winning column name is recorded as
+`repo_source_field`, so a surprising result is traceable to the column it came
+from.
+
+Three departures from the original, each closing a silent-coverage hole:
+
+- **A row with no GitHub URL is recorded, not dropped.** The original `continue`d
+  past it; the source README then had to state its coverage ("88 projects → 46
+  had a repo → 43 reachable") from manual counting. Here those rows land in the
+  manifest with `status: "skipped"`, reason `no-repo-url`, and are counted in the
+  report's blind-spot section.
+- **A row whose URL duplicates an earlier row is recorded as `skipped`** with
+  reason `duplicate-of:<slug>`, rather than vanishing. Two projects pointing at
+  one repository is a data-quality fact worth seeing.
+- **Pagination is explicit and its limits are visible.** PostgREST caps
+  responses (1000 rows by default) and `--db-limit` caps them further; both are
+  paged through, and a result landing on an exact page boundary emits a warning.
+  This is the same truncation lesson `repo-corpus` learned against `gh`'s
+  100-per-page default, applied before it can bite again.
+
+Extracted rows produce a repo list that is handed to `build_corpus.py` exactly
+as `--org` mode does, so clone hardening and the corpus contract are shared
+rather than duplicated. The metadata columns are attached to each project's
+evidence bundle under `db_metadata` and surface in the report, giving the
+analyze and security agents the team's own description of what a project is
+meant to do — context they otherwise have to infer from the README.
+
+**The self-test covers this hermetically**, with no live database:
+`--db-rows-json PATH` substitutes a saved payload for the transport layer, the
+same escape hatch `repo-corpus` uses with `--repos-json` to exercise enumeration
+without a GitHub account.
 
 ## Stage 1: Collect (deterministic, no AI)
 
@@ -489,12 +626,45 @@ self-test asserts this against its fixtures.
 ```
 insights/
   WEAKNESS-REPORT.md      human-readable, all projects
-  insights.json           machine-readable master record
+  insights.json           machine-readable master record (nested)
+  insights-table.json     flat projection, one row per project
+  insights-table.csv      the same rows, spreadsheet-openable
   security-audit.json     per-project findings + status; read by the NEXT run
   projects/<slug>.json    one record per project
   findings.sarif          for GitHub code-scanning upload
   .work/                  corpus, evidence, agent I/O — regenerable
 ```
+
+### Flat projection
+
+`insights.json` is nested and awkward to sort, diff, or paste into a
+spreadsheet. `insights-table.json` and `insights-table.csv` are the same data
+flattened to one row per project, and the report renders those rows as a
+**Project matrix** table right after the executive summary.
+
+Columns, defined once in `policy/weakness.json` as `table_columns` so the JSON,
+the CSV, and the report's matrix cannot drift apart:
+
+```
+project_slug · name · repo_url · repo_source_field · path · branch · head_sha
+stars · forks · contributors · commit_count · code_loc · license
+primary_language · project_type · uses_orm · orm_or_db_layer
+maturity_score · production_readiness_score · code_organization_score
+maintainability_score · readiness · security_risk · previous_risk
+open_findings · resolved_findings · red_flags_count · blocked
+audited_at · reaudited_at
+```
+
+This is deliberately the column set `backfill-insights.ts` upserted into
+`project_insights`, minus the dropped promo fields and plus the security axis.
+Keeping the shapes aligned means a future DB upsert is a new writer over an
+existing row, not a new data model. `references/project-insights.sql` ships the
+matching `CREATE TABLE` for anyone who wants to load it themselves; the skill
+never runs it.
+
+A project whose readiness is `unknown` still gets a row, with the missing
+fields null and `blocked` true. An absent row would read as "not scanned",
+which is the same silence the whole blind-spot discipline exists to prevent.
 
 `.work/` is disposable and its contents are regenerable; `--keep-work` preserves
 it for debugging, and the implementation adds an `insights/.work/` entry to the
@@ -503,8 +673,8 @@ package `.gitignore`.
 `WEAKNESS-REPORT.md` opens with, in this order:
 
 1. **Executive summary** — the counts per readiness tier and risk level, and the
-   blocked-project list.
-2. **Scan command** — the literal top-level invocation, captured by the driver
+   blocked-project list, followed by the **Project matrix** described above.
+2. **Scan command** — the literal top-level invocation, redacted, captured by the driver
    *before* it consumes or rewrites any argument. `--root`/`--org` resolve into
    a `--corpus` path long before the Python scripts see their own argv, which is
    exactly the failure `repo-docker-scanner` and `repo-packages-scanner` already
@@ -554,6 +724,10 @@ something sensible rather than erroring.
 | `--projects A B C` | — | Explicit project list |
 | `--corpus PATH` | — | Reuse an existing manifest |
 | `--org NAME` / `--user NAME` | — | Clone via `repo-corpus` |
+| `--db` | — | Enumerate from a projects table, read-only |
+| `--db-config PATH` | `db_source` in policy | Table and column mapping |
+| `--db-limit N` | none | Cap rows read, recorded as a blind spot when hit |
+| `--db-rows-json PATH` | — | Substitute a saved payload for the DB call (self-test, offline reruns) |
 | `--out PATH` | `./insights` | Output tree |
 | `--profile NAME\|PATH` | `generic` | Policy overlay |
 | `--phase collect\|merge\|all` | `collect` | Pipeline phase |
@@ -581,6 +755,10 @@ output path to stdout, and never reports an outcome it has no artifact to back.
 | Sibling scanner missing or failing | `{"available": false, "reason": …}` in evidence; named in blind spots |
 | A project fails to clone (`--org` mode) | `repo-corpus` records it; carried into blind spots |
 | `gh` unavailable | Issue-state check degrades to `none` with a note; never aborts |
+| Neither Supabase env vars nor `psql` available under `--db` | Exit `2` naming the variables looked for; never falls back to scanning something else |
+| DB row has no GitHub URL | Recorded `skipped` / `no-repo-url`, counted in blind spots |
+| DB row duplicates another's repo | Recorded `skipped` / `duplicate-of:<slug>` |
+| DB read hits a page boundary or `--db-limit` | Warning into the blind-spot section — a truncated list cannot be expressed as a failure |
 | Unwritable output path | Exit `2` before any work |
 | No projects discovered | Exit `2` with the discovery root echoed back — a scan of zero projects must never report clean |
 | Haiku digest fails | Report generated without the rollup, and says so |
@@ -606,6 +784,20 @@ boilerplate skeleton, and a leaky one with a committed `.env` — and asserts:
   `--split-monorepo`
 - A symlink pointing outside the root is not followed
 - `--max-depth` truncation is recorded, not silent
+
+**DB collector** (hermetic, via `--db-rows-json`, no live database)
+- The URL fallback chain picks `contribute_in_url` over `project_url` over
+  `description_markdown`, and records which column won
+- Trailing punctuation is stripped and `.git` / trailing-slash duplicates
+  collapse to one project
+- A row with no GitHub URL is recorded `skipped` / `no-repo-url` — not dropped
+- A duplicate row is recorded `skipped` / `duplicate-of:<slug>` — not dropped
+- `db_metadata` reaches the evidence bundle and the report
+- A page-boundary result and a `--db-limit` hit both emit a truncation warning
+- **A connection string in the environment never reaches the report**, and a
+  redacted scan command survives a `postgres://…` argument
+- Column mapping comes from `--db-config`; a config naming a missing column
+  fails loudly rather than silently yielding null
 
 **Evidence**
 - Tests, CI, Dockerfile, and lockfile presence are detected correctly in the
@@ -634,6 +826,9 @@ boilerplate skeleton, and a leaky one with a committed `.env` — and asserts:
 - An error path exits `2`, never `1`
 
 **Report and packaging**
+- `insights-table.json`, `insights-table.csv`, and the report's Project matrix
+  all carry the same columns in the same order, from `table_columns`
+- A project with readiness `unknown` still has a row, with `blocked` true
 - The readiness-tier legend is generated from `policy/weakness.json` and
   contains no vocabulary belonging to `repo-docker-scanner`'s or
   `repo-packages-scanner`'s P0/P1/P2 tier model — the exact regression class
@@ -670,6 +865,18 @@ excluded from the pass count, never counted as a pass.
    scanners already carry.
 5. **No auto-fix, no PRs.** Consistent with the existing scanners' v1 decision:
    writing to repositories is the riskiest surface and adds no detection value.
+6. **The DB connection is read-only, so results do not flow back into the
+   database.** The source pipeline closed that loop by upserting
+   `project_insights`; here the equivalent projection lands in
+   `insights-table.json` / `.csv` and a team wanting it in Postgres loads it
+   themselves with the shipped DDL. Bought for a blast radius that ends at the
+   output directory — a scanner that writes to a production database is a
+   scanner nobody can safely run on a whim. The column shapes are kept
+   deliberately aligned so adding the writer later is additive.
+7. **Supabase-first, not Postgres-general.** PostgREST is the only
+   dependency-free transport available to a stdlib-Python package; `psql` covers
+   plain Postgres only when it happens to be installed. A team on a database
+   with neither gets exit `2` and can use `--projects` or `--org` instead.
 
 ## Implementation sequencing
 
@@ -677,11 +884,18 @@ excluded from the pass count, never counted as a pass.
    `references/methodology.md`, marketplace registration
 2. `discover_projects.py` + its self-test assertions
 3. `collect_signals.py`, `_secrets.py`, `_siblings.py` + assertions
-4. `build_tasks.py` + `SKILL.md`'s dispatch protocol
-5. `merge_insights.py` — validation, verdict derivation, re-audit + assertions
-6. `gen_report.py` — Markdown, SARIF, generated legends + assertions
-7. `run_weakness_analysis.sh` — phases, gate, exit codes, scan-command capture
-8. `SKILL.md` in full, `CHANGELOG.md`, calibration run against real projects
+4. `db_collect.py` — PostgREST reader, `psql` fallback, URL extraction,
+   redaction, `--db-rows-json` + assertions
+5. `build_tasks.py` + `SKILL.md`'s dispatch protocol
+6. `merge_insights.py` — validation, verdict derivation, re-audit + assertions
+7. `gen_report.py` — Markdown, flat projection, CSV, SARIF, generated legends
+   + assertions
+8. `run_weakness_analysis.sh` — phases, gate, exit codes, scan-command capture
+9. `SKILL.md` in full, `references/project-insights.sql`, `CHANGELOG.md`,
+   calibration run against real projects
+
+Step 4 is independent of steps 2–3 and 5–7 and can be built in parallel with
+them; everything else is sequential.
 
 ## Success criteria
 
@@ -695,5 +909,11 @@ excluded from the pass count, never counted as a pass.
 - The self-test fails if any detector is removed
 - The report's tier legend changes when `policy/weakness.json` changes, with no
   code edit
+- `--db` over a Supabase table enumerates every row, extracts one repo URL per
+  row via the documented fallback chain, and accounts for every row that
+  produced no project
+- No database is ever written to, and no credential appears in any output file
+- `insights-table.csv` opens in a spreadsheet with one row per project,
+  including projects that failed to score
 - Nothing is written inside any scanned project, and nothing from one is
   executed
