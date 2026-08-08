@@ -34,6 +34,50 @@ def _fmt_flags(f):
     return ", ".join(x["flag"] for x in f["flags"]) or ""
 
 
+def _priority_legend_lines(policy):
+    """Render the P0/P1/P2 legend FROM the policy's own priority_rules.
+
+    A hand-written legend is a second copy of the tier definitions that can
+    silently say something the rules do not do - which is exactly what
+    happened here: the first version of this section described
+    repo-packages-scanner's tiers (actions, npm publish pipelines) inside
+    repo-docker-scanner's report. Generating it from `priority_rules` makes
+    that class of drift structurally impossible: the legend IS what the code
+    reads to assign tiers, not a description of it.
+    """
+    by_tier = {}
+    for rule in policy.get("priority_rules", []):
+        tier = rule.get("tier")
+        why = (rule.get("why") or "").strip()
+        is_catchall = not rule.get("when")
+        if not tier or not why or is_catchall:
+            continue                      # the default rule isn't a "reason"
+        seen = by_tier.setdefault(tier, [])
+        if why not in seen:
+            seen.append(why)
+
+    lines = []
+    for tier in TIERS:
+        reasons = by_tier.get(tier, [])
+        if policy.get("infra_template_tier") == tier:
+            extra = policy.get("infra_template_reason")
+            if extra and extra not in reasons:
+                reasons.append(extra)
+        text = "; ".join(r[0].upper() + r[1:] for r in reasons) if reasons else "—"
+        lines.append(f"- **{tier}** — {text}")
+
+    if policy.get("archived_repo_tier"):
+        lines.append(f"- A repository the corpus marks **archived** is tiered "
+                    f"**{policy['archived_repo_tier']}** regardless of path — "
+                    f"overrides every rule above.")
+    default_rule = next((r for r in policy.get("priority_rules", [])
+                         if not r.get("when")), None)
+    if default_rule:
+        lines.append(f"- Anything matching none of the above defaults to "
+                    f"**{default_rule['tier']}**.")
+    return lines
+
+
 def write_all(out, active, all_findings, inventory, unparsed, stats, manifest,
               policy, scanned, skipped, args, version, watchlist=None,
               excluded=None, analyzed=None, scan_command=None):
@@ -146,12 +190,15 @@ def _write_md(out, active, all_findings, inventory, unparsed, stats, manifest,
         a("None — see 'Repositories NOT scanned' below for why.")
     a("")
 
+    a("## Priority tiers")
     a("")
-    a("## Priority tiers explained")
+    a("Generated from `policy/images.json`'s `priority_rules`, not written by "
+      "hand — this section states what actually governs the tables below and "
+      "cannot drift out of sync with them the way prose describing a different "
+      "scanner's tiers would.")
     a("")
-    a("- **P0** — executes in CI with credentials, or affects a published artifact: unpinned actions in release or publish workflows, `curl | bash` in CI, `npm install` in a publishing pipeline.")
-    a("- **P1** — developer machines and build time: unpinned dev dependencies, local install scripts, contributor setup docs.")
-    a("- **P2** — documentation, examples, demos, and dead repositories. The correct fix is often archiving the repository rather than editing it.")
+    for line in _priority_legend_lines(policy):
+        a(line)
     a("")
 
     a("## Policy applied")

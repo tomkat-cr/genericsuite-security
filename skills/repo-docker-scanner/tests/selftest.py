@@ -426,6 +426,27 @@ def test_report_shape(data, out, proc):
     check("report warns that unreadable is not clean, when applicable",
           "Unreadable is not clean" in md or not data["totals"]["unreadable_paths"])
 
+    # The priority-tier legend must be GENERATED from policy/images.json's
+    # priority_rules, not hand-written prose. A hand-written version shipped
+    # once already describing repo-packages-scanner's tiers (npm publish
+    # pipelines, curl | bash) inside repo-docker-scanner's own report - two
+    # unrelated scanners, one copy-pasted paragraph. Assert both directions:
+    # every distinct rule reason from THIS policy is present, and vocabulary
+    # belonging to the other scanner's tier model is absent.
+    pol = json.load(open(os.path.join(SKILL, "policy", "images.json")))
+    check("report states the priority tiers section", "## Priority tiers" in md)
+    rule_whys = {r["why"] for r in pol.get("priority_rules", []) if r.get("when") and r.get("why")}
+    missing_whys = [w for w in rule_whys if w.lower() not in md.lower()]
+    check("every priority_rules reason for THIS policy appears in the legend",
+          not missing_whys, f"missing: {missing_whys}")
+    foreign_vocab = ["npm install", "curl | bash", "publish pipeline",
+                     "publish workflow", "contributor setup"]
+    leaked = [v for v in foreign_vocab if v.lower() in md.lower()]
+    check("the legend does not describe repo-packages-scanner's tiers "
+          "(npm/curl-bash/publish-pipeline vocabulary has no place in a "
+          "container-image report)",
+          not leaked, f"leaked: {leaked}")
+
     sarif = json.load(open(os.path.join(out, "findings.sarif"), encoding="utf-8"))
     run = sarif["runs"][0]
     rule_ids = {r["id"] for r in run["tool"]["driver"]["rules"]}
