@@ -146,6 +146,14 @@ def _write_md(out, active, all_findings, inventory, unparsed, stats, manifest,
         a("None — see 'Repositories NOT scanned' below for why.")
     a("")
 
+    a("")
+    a("## Priority tiers explained")
+    a("")
+    a("- **P0** — executes in CI with credentials, or affects a published artifact: unpinned actions in release or publish workflows, `curl | bash` in CI, `npm install` in a publishing pipeline.")
+    a("- **P1** — developer machines and build time: unpinned dev dependencies, local install scripts, contributor setup docs.")
+    a("- **P2** — documentation, examples, demos, and dead repositories. The correct fix is often archiving the repository rather than editing it.")
+    a("")
+
     a("## Policy applied")
     a("")
     a(f"Acceptable without remediation: "
