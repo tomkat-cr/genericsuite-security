@@ -6,15 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `genericsuite-security` is a Claude Code **plugin** (see `.claude-plugin/marketplace.json`, plugin name `gs-security-suite`) that packages security-response skills for GenericSuite and its ecosystem. It is a submodule of the `genericsuite` monorepo — see `/Users/carlosramirez/desarrollo/genericsuite/CLAUDE.md` for cross-package conventions. This package has no application code of its own; it is entirely skills + supporting Python scripts invoked by those skills.
 
-The plugin currently ships three skills:
+The plugin currently ships four skills:
 
 - `skills/supply-chain-ioc-scan` — built in response to the Keyv/Cacheable npm supply-chain worm ("Shai-Hulud: Here We Go Again", disclosed 2026-08-04, see `CHANGELOG.md`). Answers "did this campaign touch this machine?"
 - `skills/repo-corpus` — turns an org, a user, or a local checkout into safe, attributable clones plus a `corpus.json` manifest. Produces **no findings**; it is the foundation the scanners consume.
 - `skills/repo-docker-scanner` — consumes a corpus and reports mutable container-image references, tiered P0/P1/P2 by execution context.
+- `skills/repo-packages-scanner` — consumes a corpus and reports unpinned GitHub Actions, npm/PyPI/Go/Rust/Ruby dependencies, and unpinned remote code execution, tiered P0/P1/P2. Also carries `run_gh_scan.sh`, moved unchanged from `supply-chain-ioc-scan` (see that skill's history for why).
 
 ## Work In Progress
 
-One further skill is designed but not yet implemented: `repo-packages-scanner` (org-wide scanning for unpinned language dependencies), which also absorbs `run_gh_scan.sh`. Phases 1 (`repo-corpus`) and 2 (`repo-docker-scanner`) are implemented.
+All three planned scanner phases are implemented: `repo-corpus` (phase 1), `repo-docker-scanner` (phase 2), `repo-packages-scanner` (phase 3).
 
 **If you are picking this work up, read `docs/superpowers/HANDOFF.md` first** — it names the next concrete step, the decisions already made, and the open questions. The approved design is `docs/superpowers/specs/2026-08-06-repo-scanner-skills-design.md`.
 
@@ -43,11 +44,6 @@ python3 scripts/scan_dependencies.py --csv packages.csv --other-ecosystems packa
 python3 scripts/scan_artifacts.py --profile iocs/<campaign>.json ROOT
 ```
 
-Scan a GitHub user's repos for campaign-related indicators (requires `gh` CLI, authenticated):
-```bash
-./scripts/run_gh_scan.sh <username> [<keyword-regex> <since-date>]
-```
-
 Scan a corpus for unpinned container images (from `skills/repo-docker-scanner/`):
 ```bash
 ./scripts/run_docker_scan.sh --org tomkat-cr     # builds a corpus, then scans
@@ -56,6 +52,18 @@ python3 scripts/probe.py --corpus corpus.json --findings out/findings.json nginx
 python3 tests/selftest.py
 ```
 Exit codes `0` clean at the threshold, `1` findings, `2` error. This skill imports `_walk.py` from `repo-corpus` by path, so the two must be installed side by side. Everything opinionated lives in `policy/images.json` — mutability boundary, priority rules, namespace flags; the scanner code is policy-agnostic.
+
+Scan a corpus for unpinned Actions and dependencies (from `skills/repo-packages-scanner/`):
+```bash
+./scripts/run_packages_scan.sh --org tomkat-cr     # builds a corpus, then scans
+./scripts/run_packages_scan.sh --local .           # CI lint mode, --fail-on P0
+./scripts/run_packages_scan.sh --corpus corpus.json --resolve   # + gh api ownership checks
+python3 tests/selftest.py
+```
+Exit codes `0` clean at the threshold, `1` findings, `2` error. Same conventions as `repo-docker-scanner`: shares `_walk.py` by path, `policy/packages.json` holds everything opinionated (priority rules, lockfile names), and `report.md` states the exact scan command and the repos/branches analyzed right after the summary. `--resolve` is the only network-backed check (personal-account/archived-upstream Actions via `gh api`) and is opt-in, never required for a valid scan. Also carries `run_gh_scan.sh`, moved unchanged from `supply-chain-ioc-scan`:
+```bash
+./scripts/run_gh_scan.sh <username> [<keyword-regex> <since-date>]
+```
 
 Build a repository corpus (from `skills/repo-corpus/`):
 ```bash

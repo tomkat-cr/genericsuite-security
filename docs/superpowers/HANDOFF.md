@@ -1,30 +1,62 @@
 # Handoff: repo-scanner skills
 
-**Written:** 2026-08-06 · **Updated:** 2026-08-06 (phase 1 plan written)
+**Written:** 2026-08-06 · **Updated:** 2026-08-08 (phase 3 implemented — all
+three phases of the design are now complete)
 **Branch:** `claude/handoff-docs-review-evioh5`
 
 This note exists so a fresh session — on web, mobile, or another machine — can
 pick this work up without the original conversation.
 
-## Start here
+## All three phases are implemented
 
-Read the approved design, then the phase 2 plan's Outcome section:
+`repo-corpus` (54 assertions), `repo-docker-scanner` (63 assertions),
+`repo-packages-scanner` (63 assertions) all pass their self-tests. The
+sequencing the spec's "Implementation sequencing" section called for is
+complete. What's left is calibration and hardening, not new skills — see below.
+
+Read the design spec first, then whichever phase's plan is relevant:
 
 ```
 docs/superpowers/specs/2026-08-06-repo-scanner-skills-design.md
-docs/superpowers/plans/2026-08-07-repo-docker-scanner-implementation-plan.md
+docs/superpowers/plans/2026-08-08-repo-packages-scanner-implementation-plan.md   (phase 3, latest)
+docs/superpowers/plans/2026-08-07-repo-docker-scanner-implementation-plan.md      (phase 2)
+docs/superpowers/plans/2026-08-06-repo-corpus-implementation-plan.md              (phase 1)
 ```
 
-**Phases 1 and 2 are implemented.** `repo-corpus` (54 assertions) and
-`repo-docker-scanner` (54 assertions) both pass their self-tests. Next is
-phase 3, `repo-packages-scanner`, which reuses every convention settled in
-phase 2 and absorbs `run_gh_scan.sh` from `supply-chain-ioc-scan`.
+## A lesson worth internalizing before touching any of these reports
 
-Suggested opening prompt:
+A hand-written "Priority tiers explained" section was added directly to
+`repo-docker-scanner`'s report (bypassing this session) and immediately
+described the **wrong scanner** — its P0/P1/P2 prose was `repo-packages-scanner`'s
+tier language from the design spec, copy-pasted into the container-image
+scanner's own report. It shipped live and wrong before anyone read it closely.
 
-> Read `docs/superpowers/specs/2026-08-06-repo-scanner-skills-design.md` and
-> `skills/repo-docker-scanner/`, then create an implementation plan for
-> phase 3, `repo-packages-scanner`.
+The fix, applied to both scanners: the priority-tier legend in `report.md` is
+**generated from `policy/*.json`'s `priority_rules`**, never hand-written
+prose. `repo-packages-scanner` was built with this from its first commit
+(`_report.py`'s `_priority_legend_lines()`), specifically so it would not
+repeat the mistake its sibling had just made. If you ever find yourself typing
+a `- **P0** — ...` line by hand into either scanner's `_report.py`, stop — add
+or edit a `priority_rules` entry in the policy JSON instead. Both self-tests
+assert every distinct rule reason appears in the rendered legend, so a
+generator that stops reading the policy correctly also fails loudly.
+
+## What each report now states, right after the summary (both scanners)
+
+Requested explicitly and load-bearing for anyone reading a report cold:
+
+1. **Scan command** — the literal top-level invocation
+   (`./scripts/run_*_scan.sh --org … --branch …`), captured by the driver
+   *before* it consumes or rewrites any argument, since `--org`/`--include`/
+   `--branch` resolve into a `--corpus` path long before the Python scanner
+   ever sees its own argv. Falls back to reconstructing argv when the Python
+   script is run directly.
+2. **Repositories and branches analyzed** — every repo/branch/HEAD SHA the
+   scan actually walked, not just a count. A `--branch`- or `--include`-
+   filtered corpus can mean "no findings" covers one repo out of forty.
+3. **Priority tiers** — the generated legend described above.
+
+Both scan_command and repos_analyzed also land in `findings.json`.
 
 ## Calibration: first real signal in, one real gap found and fixed
 
@@ -107,13 +139,47 @@ which is not enough to revisit the D6 scope defaults on.
   `_walk.py`, `run_corpus.sh`, `SKILL.md`, self-test; marketplace path fixed
   and now guarded by an assertion
 
-**Next:** plan and build phase 2 (`repo-docker-scanner`), then phase 3
-(`repo-packages-scanner`).
+- **Phase 2 implemented**: `skills/repo-docker-scanner/` — mutable
+  container-image detection, tiered P0/P1/P2, 63 assertions.
+- **Phase 3 implemented**: `skills/repo-packages-scanner/` — unpinned GitHub
+  Actions, npm/PyPI/Go/Rust/Ruby dependencies, unpinned remote code execution,
+  tiered P0/P1/P2, 63 assertions. Absorbed `run_gh_scan.sh` from
+  `supply-chain-ioc-scan` via `git mv` (byte-identical, per decision 3 below).
+
+**Next:** calibration and hardening — see "Open questions" below. No new
+skills are planned; the design's three phases are all built.
 
 > Note on tooling: the phase 1 plan was asked for via the
 > `superpowers:writing-plans` skill, which was not installed in the session
 > that wrote it. It was written directly against the spec in that skill's
-> structure. If you have the skill available, use it for phases 2 and 3.
+> structure. Phases 2 and 3 followed the same approach for consistency.
+
+## What phase 3 built
+
+`repo-packages-scanner` closes the design: every detection pass named in the
+spec's Skill 2 table has a corresponding detector and a self-test fixture case.
+
+- `scripts/_actions.py`, `_npm.py`, `_pypi.py`, `_remote_exec.py`,
+  `_other_langs.py` — one module per pass, each independently testable
+- `scripts/_classify.py` — the only genuinely shared logic (commit-SHA check,
+  fingerprinting); unlike the docker scanner there is no single mutability
+  table, each ecosystem classifies its own grammar
+- "Missing lockfile" (repo-tree fact) and "install-not-ci" (CI-content fact)
+  are two different finding classes, not merged — a repo can have a committed
+  lockfile and still run `npm install` in CI, ignoring it entirely
+- `--resolve` is the only network call (personal-account / archived-upstream
+  Actions via `gh api`), opt-in, never required — mirrors the docker
+  scanner's digest-resolution contract exactly
+- `pyproject.toml` and `Cargo.toml` are read by small state-machine section
+  scanners, not a real TOML parser (`tomllib` needs Python 3.11+, this
+  package has no version floor that high) — same "subset reader, not an
+  implementation" approach as the docker scanner's `_yamlish.py`
+
+**Not verified here:** `--resolve` against a live `gh api` — no `gh` CLI in
+the implementing environment, same gap phase 1 and 2 both carried at their
+own implementation time. The plumbing (caching, graceful no-op when `gh` is
+absent, never aborting the run) is real but only proven against a synthetic
+non-network path.
 
 ## What phase 1 built (the interface phase 2 consumes)
 
@@ -151,25 +217,30 @@ mistakes if you meet them without context:
 2. **All branches cloned by default** — costs bandwidth for a blind spot the
    source playbook calls marginal. `--default-branch-only` is the escape hatch.
 3. **`run_gh_scan.sh` moves to `repo-packages-scanner`** — domain-mismatched
-   (it detects compromise, not unpinned deps), explicitly requested, and to be
-   documented in a clearly separate `SKILL.md` section.
+   (it detects compromise, not unpinned deps), explicitly requested, and
+   documented in a clearly separate `SKILL.md` section. *Done*, via `git mv`,
+   unchanged byte-for-byte.
 4. **No auto-fix branches or PRs in v1** — deliberately deferred as the riskiest
    surface with no detection value.
 
 ## Open questions the author flagged
 
-Two things were called out as most worth a second look:
-
-- **`repo-corpus` scope defaults.** *Resolved in the phase 1 plan (D6):* keep
-  them broad — archived, forks, and non-default branches all included —
-  following the principle already load-bearing in `supply-chain-ioc-scan`, that
-  narrowing scope is how a scan misses what it was run to find. The bandwidth
-  cost gets measured during Task 8 and quoted in `SKILL.md`, so revisiting the
-  default later is an argument about numbers rather than taste.
-- **The P0/P1/P2 priority models** in both scanners. **Still open**, and
-  deliberately not addressed by the phase 1 plan — it belongs to phases 2 and
-  3. This is what turns "400 findings" into something a maintainer acts on. If
-  the tier boundaries are wrong, the reports are noise.
+- **`repo-corpus` scope defaults.** *Resolved* (phase 1 plan, D6): kept broad
+  — archived, forks, and non-default branches all included. The bandwidth
+  cost is quoted in that skill's `SKILL.md` from a real measurement.
+- **The P0/P1/P2 priority models.** *Partially calibrated.* Both scanners'
+  tier boundaries are now real code (`priority_rules` in each policy JSON,
+  rendered into every report as a generated legend — see the lesson above),
+  and the docker scanner has one real-org calibration data point (see below).
+  **`repo-packages-scanner` has zero calibration runs against a real org** —
+  everything about its tier boundaries is verified only against the synthetic
+  self-test fixture. Run it against `tomkat-cr` (or any real org) and read the
+  tier histogram before trusting `--fail-on P0` as a CI gate. If P0 lights up
+  with dozens of findings, the boundary is wrong regardless of how defensible
+  it looks in the abstract — retuning is a `policy/packages.json` edit, never
+  a code change.
+- **`--resolve` is unverified against live `gh api`** (see "What phase 3
+  built" above) — worth a real run once `gh` is available.
 
 ## Context worth knowing
 
