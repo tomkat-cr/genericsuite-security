@@ -11,14 +11,15 @@
   "plugins": [
     {
       "name": "gs-security-suite",
-      "description": "GenericSuite security suite — supply chain security for OSS projects",
+      "description": "GenericSuite security suite — supply chain security and production-readiness analysis for projects",
       "source": "./",
       "strict": false,
       "skills": [
         "./skills/supply-chain-ioc-scan",
         "./skills/repo-corpus",
         "./skills/repo-docker-scanner",
-        "./skills/repo-packages-scanner"
+        "./skills/repo-packages-scanner",
+        "./skills/project-weakness-analysis"
       ]
     }
   ]

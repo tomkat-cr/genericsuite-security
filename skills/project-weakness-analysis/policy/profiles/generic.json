@@ -1,0 +1,6 @@
+{
+  "name": "generic",
+  "description": "Framework-neutral. Applies to any project in any language.",
+  "agent_instructions": { "analyze": [], "security": [] },
+  "extra_checks": []
+}
