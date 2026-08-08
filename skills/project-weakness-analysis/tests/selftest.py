@@ -150,6 +150,68 @@ def test_discovery_symlink_escape():
                   "got %s" % found)
 
 
+def build_secrets_fixture(base):
+    proj = os.path.join(base, "leaky")
+    write(os.path.join(proj, ".env"), "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n")
+    write(os.path.join(proj, ".env.example"), "AWS_ACCESS_KEY_ID=your-key-here\n")
+    write(os.path.join(proj, "src", "config.js"),
+          "const k = 'AKIAIOSFODNN7EXAMPLE';\n"
+          "const db = 'postgres://admin:hunter2@db.example.com/app';\n")
+    write(os.path.join(proj, "package-lock.json"),
+          '{"integrity": "sha512-AIzaSyA1234567890123456789012345678901"}\n')
+    write(os.path.join(proj, "tests", "fixture.js"), "const k = 'xxx';\n")
+    write(os.path.join(proj, "docs", "setup.md"), "# set SECRET_KEY = changeme\n")
+    return proj
+
+
+def test_secrets():
+    import tempfile
+    import _secrets
+    policy = _policy.load_policy()
+    with tempfile.TemporaryDirectory() as base:
+        proj = build_secrets_fixture(base)
+        tracked = [".env", ".env.example", "src/config.js", "package-lock.json",
+                   "tests/fixture.js", "docs/setup.md"]
+        f = _secrets.scan_project(proj, policy, tracked=tracked)
+        by_file = {}
+        for x in f:
+            by_file.setdefault(x["file"], []).append(x)
+
+        check("a tracked .env is CONFIRMED",
+              any(x["tier"] == "CONFIRMED" for x in by_file.get(".env", [])))
+        check("an AWS key in source is REVIEW",
+              any(x["pattern"] == "aws-access-key-id" and x["tier"] == "REVIEW"
+                  for x in by_file.get("src/config.js", [])))
+        check("a db URL with an inline password is REVIEW",
+              any(x["pattern"] == "db-url-with-password"
+                  for x in by_file.get("src/config.js", [])))
+
+        check("BENIGN: .env.example does not fire", ".env.example" not in by_file)
+        check("BENIGN: a lockfile integrity blob does not fire",
+              "package-lock.json" not in by_file)
+        check("BENIGN: a placeholder in a test fixture does not fire",
+              "tests/fixture.js" not in by_file)
+        check("BENIGN: a commented placeholder does not fire",
+              "docs/setup.md" not in by_file)
+
+        check("no finding contains a full secret value",
+              all("IOSFODNN7EXAMPLE" not in x["masked"] for x in f))
+        check("every finding carries file, line, pattern and mask",
+              all(set(("tier", "file", "line", "pattern", "masked")) <= set(x) for x in f))
+
+
+def test_secrets_untracked_env_is_not_confirmed():
+    import tempfile
+    import _secrets
+    policy = _policy.load_policy()
+    with tempfile.TemporaryDirectory() as base:
+        proj = os.path.join(base, "clean")
+        write(os.path.join(proj, ".env"), "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n")
+        f = _secrets.scan_project(proj, policy, tracked=[])
+        check("an UNTRACKED .env is not CONFIRMED",
+              not any(x["tier"] == "CONFIRMED" for x in f))
+
+
 def main():
     print("Policy and profiles")
     test_policy_loads()
@@ -161,6 +223,10 @@ def main():
     print("\nDiscovery")
     test_discovery()
     test_discovery_symlink_escape()
+
+    print("\nSecrets")
+    test_secrets()
+    test_secrets_untracked_env_is_not_confirmed()
 
     passed = sum(1 for _, ok in results if ok)
     total = len(results)
