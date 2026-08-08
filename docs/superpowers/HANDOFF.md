@@ -26,23 +26,52 @@ Suggested opening prompt:
 > `skills/repo-docker-scanner/`, then create an implementation plan for
 > phase 3, `repo-packages-scanner`.
 
-## Do this first: calibrate the priority tiers
+## Calibration: first real signal in, one real gap found and fixed
 
-Phase 2 shipped with its calibration run (plan Task 12) **not done** — the
-implementing environment had no `gh`. This is the open question the handoff has
-carried since the start, and it is now answerable with data rather than
-opinion:
+The author ran `./scripts/run_docker_scan.sh --org tomkat-cr --include prico
+--branch develop` on real hardware and shared the three report files back. That
+is a first slice of Task 12's calibration run — one repo (`prico`; the other
+four `prico*` repos were correctly skipped for lacking a `develop` branch,
+which is `--branch`'s designed behaviour, not a bug) — and it found a real
+tier-boundary gap on the first try:
+
+A docker reference inside a CloudFormation template
+(`server/scripts/aws_ec2_elb/template-cf-ec2-elb.yml`) landed at **P1
+"default when no rule matches"** instead of P0, because no `priority_rules`
+glob named that directory as production. The same class of gap `*.tf` was
+supposed to close for Terraform had no CloudFormation equivalent. Fixed by
+content-sniffing CloudFormation (`AWSTemplateFormatVersion`, or a `Type:
+AWS::…` resource block) the same way a renamed Dockerfile is caught by content
+rather than filename — so it tiers P0 regardless of where in the tree it
+lives, instead of trying to enumerate every IaC directory-naming convention by
+glob.
+
+The same run also surfaced a cosmetic-but-trust-eroding bug: a
+template-composed reference (`${ECRRepositoryName}` etc., class `unresolved`)
+was having the image-reference normalizer run on it, which lowercased one
+`${...}` segment while leaving another untouched in the same string — reading
+as the tool corrupting the user's own text. Unresolved references are now
+reported and inventoried verbatim.
+
+**Still open — the wider calibration.** This was one repo. Run the full org
+scan and read the tier histogram:
 
 ```bash
 cd skills/repo-docker-scanner
-./scripts/run_docker_scan.sh --org tomkat-cr --include prico
+./scripts/run_docker_scan.sh --org tomkat-cr
 ```
 
-Read the tier histogram. If P0 lights up with dozens of findings on the first
-run, the boundary is wrong regardless of how defensible it looks — the gate
-gets switched off and the scanner becomes decoration. Retuning is a
-`policy/images.json` edit, never a code change. Then run `probe.py` with two or
-three image names you know are in use; every unexplained hit is a detector bug.
+If P0 still lights up with dozens of findings, the boundary is wrong
+regardless of how defensible it looks — the gate gets switched off and the
+scanner becomes decoration. Retuning is a `policy/images.json` edit, never a
+code change. Then run `probe.py` with two or three image names known to be in
+use; every unexplained hit is a detector bug.
+
+One more thing worth knowing before reading a baseline-suppressed report: two
+findings for the *same reference in the same file* on different lines share
+one fingerprint (deliberately — see `SKILL.md`'s Baseline section), so
+baselining one occurrence baselines every occurrence of that reference in that
+file, not just the line reviewed.
 
 ## Verified on real hardware
 

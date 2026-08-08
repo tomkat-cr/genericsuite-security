@@ -31,6 +31,7 @@ sys.path.insert(0, CORPUS_SCRIPTS)
 import _classify        # noqa: E402
 import _dockerfile      # noqa: E402
 import _yamlish         # noqa: E402
+import _detectors       # noqa: E402
 import scan_images      # noqa: E402
 
 GREEN, RED, YELLOW, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[0m"
@@ -141,6 +142,30 @@ docker run --rm -e FOO=bar \\
       - name: product_id
         reference: analytics.products.id
 """)
+
+    # A CloudFormation template, deliberately at a path no priority_rules glob
+    # names (no .tf, no .github/, no kustomization.yaml). Real org run: a
+    # docker reference inside such a file fell through to the P1 default
+    # because nothing named "server/scripts/aws_ec2_elb/" as production. The
+    # embedded reference is also template-composed, to catch normalize()
+    # mangling a ${...} placeholder while classifying it.
+    write(os.path.join(repo, "server", "scripts", "aws_ec2_elb", "template-cf-ec2-elb.yml"),
+          """AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            docker pull ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRRepositoryName}:${ECRImageTag}
+""")
+
+    # Ordinary YAML that mentions "AWS::" only in prose/values, never as a
+    # `Type:` key - must NOT be misidentified as CloudFormation by the sniff.
+    write(os.path.join(repo, "docs", "notes.yml"),
+          "note: this project deploys to AWS::S3 sometimes\n")
 
     manifest = {
         "schema_version": 1,
@@ -256,6 +281,14 @@ def test_unit_parsers():
     check("the YAML reader does not read block-scalar bodies as keys",
           not any("NOPE" in v for v in got.values()), f"got {got}")
 
+    check("is_cloudformation() recognises AWSTemplateFormatVersion",
+          _detectors.is_cloudformation("AWSTemplateFormatVersion: '2010-09-09'\n"))
+    check("is_cloudformation() recognises a `Type: AWS::...` resource block",
+          _detectors.is_cloudformation("Resources:\n  X:\n    Type: AWS::EC2::Instance\n"))
+    check("is_cloudformation() does NOT fire on prose merely mentioning AWS::",
+          not _detectors.is_cloudformation(
+              "note: this project deploys to AWS::S3 sometimes\n"))
+
 
 def test_positives(data):
     r = refs_of(data)
@@ -289,6 +322,25 @@ def test_positives(data):
           has("toolset-linux.json", "moby/buildkit:latest"))
     check("BUG 3: findings under a path segment named `tilt` are not discarded",
           len(r) > 0 and all("/tilt/" not in f for f, _ in r), f"{sorted(r)}")
+
+    cfn_ref = "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRRepositoryName}:${ECRImageTag}"
+    check("docker pull inside a CloudFormation UserData block scalar is found",
+          has("template-cf-ec2-elb.yml", cfn_ref), f"{sorted(r)}")
+    cfn_findings = [f for f in data["findings"] if "template-cf-ec2-elb.yml" in f["file"]]
+    check("a CloudFormation-embedded reference is tiered P0 by content, "
+          "even though its path matches no priority_rules glob",
+          cfn_findings and all(f["priority"] == "P0" for f in cfn_findings)
+          and all("CloudFormation" in f["priority_reason"] for f in cfn_findings),
+          f"{cfn_findings}")
+    check("a template-composed reference is NOT mangled by image-path "
+          "normalization - normalize() partially lowercased "
+          "${ECRRepositoryName} while leaving ${AWS::Region} untouched, "
+          "which reads as the tool corrupting the user's own text",
+          cfn_findings and all(f["normalized"] == cfn_ref for f in cfn_findings),
+          f"{[f['normalized'] for f in cfn_findings]}")
+    check("the same verbatim reference reaches the inventory unmangled",
+          any(i["reference"] == cfn_ref for i in data["inventory"]),
+          f"{[i['reference'] for i in data['inventory']]}")
 
 
 def test_negatives(data):

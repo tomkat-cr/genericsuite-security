@@ -75,9 +75,22 @@ def fingerprint(repo, filepath, normalized, klass):
     return h.hexdigest()[:16]
 
 
-def priority_for(relpath, repo_entry, policy):
+def priority_for(relpath, repo_entry, policy, is_iac=False):
     if repo_entry.get("github", {}) and repo_entry["github"].get("isArchived"):
         return policy.get("archived_repo_tier", "P2"), "archived repository"
+    if is_iac:
+        # Caught by content, not by path: a CloudFormation template that
+        # provisions EC2/ELB/etc is production desired state wherever it lives
+        # in the tree, the same reasoning already applied to *.tf. A real org
+        # run found exactly this gap - a docker reference inside
+        # server/scripts/aws_ec2_elb/template-cf-ec2-elb.yml fell through every
+        # path_glob rule to the P1 default, because no glob names
+        # infrastructure templates by their content. Naming every possible
+        # IaC directory convention is a losing game; sniffing the content the
+        # same way Dockerfile discovery does is not.
+        return (policy.get("infra_template_tier", "P0"),
+               policy.get("infra_template_reason",
+                          "CloudFormation template - provisions production infrastructure"))
     posix = relpath.replace(os.sep, "/")
     # Matched case-INsensitively, same reasoning as the Dockerfile name check in
     # _dockerfile.py: a rule glob like "**/Dockerfile*" must still catch
@@ -155,10 +168,22 @@ def scan_corpus(manifest, policy, args):
                                  "error": f"{e.__class__.__name__}: {e}"})
                 continue
 
+            is_iac = relpath.endswith(_detectors.YAML_EXT) and _detectors.is_cloudformation(text)
+
             for hit in hits:
                 ref = hit["ref"]
                 klass, reason = _classify.classify(ref, policy)
-                norm = _classify.normalize(ref)
+                # A template-composed reference (class "unresolved") is not a
+                # real image reference, so running the digest/tag/namespace
+                # splitter on it produces nonsense: normalize() partially
+                # lowercased "${ECRRepositoryName}" to "${ecrrepositoryname}"
+                # while leaving "${AWS::Region}" untouched elsewhere in the
+                # same string, because the splitter happened to treat one
+                # ${...} segment as the "name" component and another as part of
+                # the "registry" host. That reads as the tool corrupting the
+                # user's own text, which erodes trust in an otherwise-correct
+                # finding. Keep unresolved references verbatim.
+                norm = ref if klass == "unresolved" else _classify.normalize(ref)
                 inventory[norm] = inventory.get(norm, 0) + 1
                 flags = _classify.ownership_flags(ref, policy)
                 acceptable = _classify.is_acceptable(klass, policy)
@@ -179,7 +204,7 @@ def scan_corpus(manifest, policy, args):
                     watchlist[norm]["occurrences"] += 1
                 if acceptable and not finding_flags:
                     continue
-                tier, why = priority_for(relpath, entry, policy)
+                tier, why = priority_for(relpath, entry, policy, is_iac)
                 findings.append({
                     "fingerprint": fingerprint(entry["name"], relpath, norm, klass),
                     "repo": entry["name"],

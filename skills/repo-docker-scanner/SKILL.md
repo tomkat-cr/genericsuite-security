@@ -191,6 +191,14 @@ Findings are fingerprinted on `(repo, file, normalized reference, class)` —
 deliberately **not** the line number, so accepted risk stays accepted when a
 file shifts. Baselined findings are counted in the report, never hidden.
 
+**One consequence worth knowing:** two findings for the *same reference in the
+same file* share a fingerprint even on different lines — e.g. a script that
+does both `docker pull $IMG` and `docker run $IMG` produces one fingerprint for
+both. Baselining it accepts both occurrences, not just the one you reviewed.
+This is deliberate — if the reference in that file is accepted risk, every
+occurrence of it is — but it means a baseline entry can silently cover more
+lines than the one that prompted it.
+
 ## Self-Test
 
 ```bash

@@ -231,6 +231,20 @@ def registry_sweep(text, policy):
     return hits
 
 
+# --- infrastructure-as-code content sniff -----------------------------------
+
+# CloudFormation is recognisable by content regardless of filename or
+# directory convention, the same way a renamed Dockerfile is caught by content
+# rather than by name. A single top-level AWSTemplateFormatVersion key, or a
+# resource block's `Type: AWS::...`, is specific enough that ordinary prose or
+# YAML mentioning AWS incidentally will not match it.
+CFN_TYPE_RE = re.compile(r'(?m)^\s*Type:\s*["\']?AWS::')
+
+
+def is_cloudformation(text):
+    return "AWSTemplateFormatVersion" in text or bool(CFN_TYPE_RE.search(text))
+
+
 # --- dispatch ---------------------------------------------------------------
 
 YAML_EXT = (".yml", ".yaml")

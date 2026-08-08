@@ -182,6 +182,9 @@
     }
   ],
   "_priority_note": "Ordered; first match wins. Repo-level overrides (archived repos to P2) are applied before these by the scanner, since they are a property of the repository rather than the path.",
+  "infra_template_tier": "P0",
+  "infra_template_reason": "CloudFormation template - provisions production infrastructure",
+  "_infra_template_note": "Applied when the FILE CONTENT sniffs as CloudFormation (AWSTemplateFormatVersion, or a resource's Type: AWS::...), independent of every path_glob rule above and independent of directory naming convention. A real org run found a docker reference inside a CFN template that fell through to the P1 default because no glob named the directory it happened to live in - the same class of gap *.tf closes for Terraform, generalised by content instead of extension.",
   "archived_repo_tier": "P2",
   "_archived_note": "The correct fix for an archived repo is usually archiving harder - deleting it - not editing it.",
   "known_benign_collisions": {
