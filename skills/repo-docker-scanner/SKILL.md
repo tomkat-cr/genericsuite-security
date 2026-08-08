@@ -51,6 +51,20 @@ Exit `0` no findings at the threshold, `1` findings, `2` error.
 This skill consumes a corpus from `repo-corpus` and shares its `_walk.py` by
 path rather than by copy — install both side by side.
 
+**`--resolve` is the only network call, and it is optional.** Static findings
+are complete and correct without it. With it, every unpinned finding gets a
+copy-pasteable digest suggestion — `image:tag@sha256:…` — resolved via an
+**anonymous** registry bearer token over stdlib `urllib` (no `docker`/`skopeo`
+dependency, no credentials sent): a GET against `/v2/{repo}/manifests/{tag}`,
+a `WWW-Authenticate` challenge parsed for `realm`/`service`/`scope` (never
+hardcoded — Docker Hub, `ghcr.io`, `quay.io` each use a different realm), an
+anonymous token fetched from it, then the digest read from the registry's own
+`Docker-Content-Digest` response header — never computed locally from the
+body, since a proxy could alter bytes in transit without the registry
+considering its canonical digest changed. A resolution failure is recorded
+per finding and never suppresses it or aborts the run. Verified live against
+both Docker Hub and `ghcr.io` during development.
+
 Right after the summary, `report.md` states **exactly** what produced it:
 
 - **Scan command** — the literal top-level command, e.g.

@@ -9,7 +9,7 @@ pick this work up without the original conversation.
 
 ## All three phases are implemented
 
-`repo-corpus` (54 assertions), `repo-docker-scanner` (63 assertions),
+`repo-corpus` (54 assertions), `repo-docker-scanner` (88 assertions),
 `repo-packages-scanner` (63 assertions) all pass their self-tests. The
 sequencing the spec's "Implementation sequencing" section called for is
 complete. What's left is calibration and hardening, not new skills — see below.
@@ -140,7 +140,7 @@ which is not enough to revisit the D6 scope defaults on.
   and now guarded by an assertion
 
 - **Phase 2 implemented**: `skills/repo-docker-scanner/` — mutable
-  container-image detection, tiered P0/P1/P2, 63 assertions.
+  container-image detection, tiered P0/P1/P2 by execution context, 88 assertions (includes a live-network `--resolve` check).
 - **Phase 3 implemented**: `skills/repo-packages-scanner/` — unpinned GitHub
   Actions, npm/PyPI/Go/Rust/Ruby dependencies, unpinned remote code execution,
   tiered P0/P1/P2, 63 assertions. Absorbed `run_gh_scan.sh` from
@@ -168,18 +168,43 @@ spec's Skill 2 table has a corresponding detector and a self-test fixture case.
   are two different finding classes, not merged — a repo can have a committed
   lockfile and still run `npm install` in CI, ignoring it entirely
 - `--resolve` is the only network call (personal-account / archived-upstream
-  Actions via `gh api`), opt-in, never required — mirrors the docker
-  scanner's digest-resolution contract exactly
+  Actions via `gh api`), opt-in, never required — the packages-scanner half
+  of the design spec's "Opt-in resolution" section
 - `pyproject.toml` and `Cargo.toml` are read by small state-machine section
   scanners, not a real TOML parser (`tomllib` needs Python 3.11+, this
   package has no version floor that high) — same "subset reader, not an
   implementation" approach as the docker scanner's `_yamlish.py`
 
 **Not verified here:** `--resolve` against a live `gh api` — no `gh` CLI in
-the implementing environment, same gap phase 1 and 2 both carried at their
-own implementation time. The plumbing (caching, graceful no-op when `gh` is
-absent, never aborting the run) is real but only proven against a synthetic
-non-network path.
+the implementing environment. The plumbing (caching, graceful no-op when `gh`
+is absent, never aborting the run) is real but only proven against a
+synthetic non-network path.
+
+## Post-phase-3: `repo-docker-scanner` also got `--resolve`
+
+The design spec's "Opt-in resolution" section calls for it in **both**
+scanners — an anonymous registry bearer token resolving a tag to its digest,
+stdlib `urllib` only. Phase 2 shipped without it; added afterward, in the
+same session, once it became clear phase 3's `--resolve` had no counterpart
+to actually mirror.
+
+Unlike the `gh api` path above, **this one is fully verified live** — the
+implementing environment had real outbound HTTPS access (confirmed with
+`curl` before writing a line of code) — against both Docker Hub
+(`alpine:3.19`, `nginx:latest`) and `ghcr.io` (`github/super-linter`), success
+and failure paths both. The self-test's live-network assertions run for real
+rather than against a mock, and skip loudly (not silently) if network is
+unavailable in a future environment — verified by simulating that condition
+and confirming zero vacuous passes.
+
+One first-try mistake worth knowing if you touch `_resolve.py`: testing
+against `ghcr.io/actions/checkout` failed with a 401 at the token endpoint,
+which looked like an auth-flow bug. It wasn't — `actions/checkout` is a
+JavaScript Action with no container image at all, a bad test target, not a
+broken implementation. Confirmed by successfully resolving a real GHCR
+package (`github/super-linter`) with the identical code path. If a
+resolution fails during real use, check whether the reference is genuinely
+a registry image before assuming the resolver is broken.
 
 ## What phase 1 built (the interface phase 2 consumes)
 
@@ -239,8 +264,10 @@ mistakes if you meet them without context:
   with dozens of findings, the boundary is wrong regardless of how defensible
   it looks in the abstract — retuning is a `policy/packages.json` edit, never
   a code change.
-- **`--resolve` is unverified against live `gh api`** (see "What phase 3
-  built" above) — worth a real run once `gh` is available.
+- **`repo-packages-scanner --resolve` is unverified against live `gh api`**
+  (see "What phase 3 built" above) — worth a real run once `gh` is available.
+  `repo-docker-scanner --resolve` is the opposite case: fully verified live,
+  see "Post-phase-3" above.
 
 ## Context worth knowing
 

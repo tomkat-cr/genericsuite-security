@@ -27,6 +27,9 @@ BLIND_SPOTS = [
     "commands inside a `run: |` block ARE still caught, by the raw-text pass.",
     "Any repository that failed to clone, and any branch other than the one "
     "checked out in the corpus.",
+    "Suggested digest pins (--resolve) reflect the tag's content at scan "
+    "time - a mutable tag can move again the moment after resolution. "
+    "Digest pinning is only fully trustworthy once it is committed.",
 ]
 
 
@@ -209,18 +212,35 @@ def _write_md(out, active, all_findings, inventory, unparsed, stats, manifest,
       f"the rows below.")
     a("")
 
+    resolved_run = any("resolved_digest" in f for f in active)
+    if resolved_run:
+        a("`--resolve` was used: an extra **Suggested pin** column shows a "
+          "copy-pasteable `image:tag@sha256:…` where resolution succeeded. A "
+          "blank cell means resolution failed for that reference specifically "
+          "(see `findings.json`'s `resolve_error`) - the finding itself is "
+          "unaffected, resolution failures never suppress a finding.")
+        a("")
+
     for tier in TIERS:
         rows = [f for f in active if f["priority"] == tier]
         if not rows:
             continue
         a(f"## {tier} ({len(rows)})")
         a("")
-        a("| Repo | File:line | Reference | Class | Flags | Why this tier |")
-        a("|---|---|---|---|---|---|")
+        if resolved_run:
+            a("| Repo | File:line | Reference | Class | Flags | Why this tier | Suggested pin |")
+            a("|---|---|---|---|---|---|---|")
+        else:
+            a("| Repo | File:line | Reference | Class | Flags | Why this tier |")
+            a("|---|---|---|---|---|---|")
         for f in sorted(rows, key=lambda x: (x["repo"], x["file"], x["line"])):
             loc = f"{f['file']}:{f['line']}" if f["line"] else f["file"]
-            a(f"| {f['repo']} | `{loc}` | `{f['reference']}` | {f['class']} "
-              f"| {_fmt_flags(f)} | {f['priority_reason']} |")
+            row = (f"| {f['repo']} | `{loc}` | `{f['reference']}` | {f['class']} "
+                  f"| {_fmt_flags(f)} | {f['priority_reason']} |")
+            if resolved_run:
+                pin = f.get("suggested_pin")
+                row += f" `{pin}` |" if pin else " |"
+            a(row)
         a("")
 
     if skipped:

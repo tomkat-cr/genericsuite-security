@@ -46,6 +46,7 @@ except ImportError:
 import _classify        # noqa: E402
 import _detectors       # noqa: E402
 import _report          # noqa: E402
+import _resolve         # noqa: E402
 
 VERSION = "1.0"
 TIERS = ["P0", "P1", "P2"]
@@ -266,8 +267,34 @@ def scan_corpus(manifest, policy, args):
             seen[key] = f
     deduped = list(seen.values())
 
+    if getattr(args, "resolve", False):
+        _apply_resolution(deduped)
+
     return (deduped, inventory, unparsed, stats_total, scanned_repos,
             skipped_repos, watchlist, excluded, analyzed_repos)
+
+
+def _apply_resolution(findings):
+    """--resolve: attach a copy-pasteable digest-pinned suggestion to every
+    finding whose reference is actually resolvable (has a tag, isn't already
+    digest-pinned, isn't a template placeholder). Per the spec: never
+    required, never aborts the run - a failure is recorded on the finding and
+    every other finding is unaffected."""
+    resolver = _resolve.Resolver()
+    for f in findings:
+        if f["class"] in ("digest", "untagged", "unresolved"):
+            f["resolved_digest"] = None
+            f["resolve_error"] = (
+                "no tag to resolve" if f["class"] == "untagged"
+                else "composed at deploy time - nothing to resolve" if f["class"] == "unresolved"
+                else "already digest-pinned")
+            continue
+        digest, err = resolver.resolve(f["reference"])
+        f["resolved_digest"] = digest
+        f["resolve_error"] = err
+        if digest:
+            base = f["reference"].split("@", 1)[0]
+            f["suggested_pin"] = f"{base}@{digest}"
 
 
 def main(argv=None):
@@ -284,6 +311,9 @@ def main(argv=None):
     p.add_argument("--exclude", action="append", metavar="REGEX",
                    help="skip paths matching this regex (repeatable); every "
                         "exclusion is counted and listed in the report")
+    p.add_argument("--resolve", action="store_true",
+                   help="resolve unpinned tags to a digest via an anonymous "
+                        "registry token (network, best-effort, never required)")
     p.add_argument("--sarif", action="store_true", help="also emit findings.sarif")
     args = p.parse_args(argv)
 

@@ -29,6 +29,7 @@ CORPUS_SCRIPTS = os.path.join(os.path.dirname(SKILL), "repo-corpus", "scripts")
 sys.path.insert(0, SCRIPTS)
 sys.path.insert(0, CORPUS_SCRIPTS)
 import _classify        # noqa: E402
+import _resolve          # noqa: E402
 import _dockerfile      # noqa: E402
 import _yamlish         # noqa: E402
 import _detectors       # noqa: E402
@@ -36,12 +37,20 @@ import scan_images      # noqa: E402
 
 GREEN, RED, YELLOW, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[0m"
 results = []
+skipped = []
 
 
 def check(name, condition, detail=""):
     results.append((name, bool(condition)))
     tag = f"{GREEN}PASS{RESET}" if condition else f"{RED}FAIL{RESET}"
     print(f"  [{tag}] {name}" + (f"\n         {detail}" if detail and not condition else ""))
+
+
+def skip(name, why):
+    """A skipped assertion is NOT a passed one, and must never be counted as
+    one - a vacuous pass is a false claim that something was verified."""
+    skipped.append((name, why))
+    print(f"  [{YELLOW}SKIP{RESET}] {name}\n         {why}")
 
 
 def write(path, content):
@@ -297,6 +306,64 @@ def test_unit_parsers():
               "note: this project deploys to AWS::S3 sometimes\n"))
 
 
+def test_resolve_offline():
+    """The pure-logic parts of --resolve that need no network: repo-path
+    construction and WWW-Authenticate challenge parsing. These run always,
+    unlike the live check below."""
+    check("Docker Hub official image gets the library/ namespace",
+          _resolve._repo_path(None, None, "nginx") == "library/nginx")
+    check("Docker Hub namespaced image keeps its namespace",
+          _resolve._repo_path(None, "myorg", "app") == "myorg/app")
+    check("a registry-qualified image is not given a library/ namespace",
+          _resolve._repo_path("ghcr.io", "org", "app") == "org/app")
+    check("no registry means Docker Hub's real host",
+          _resolve._registry_host(None) == "registry-1.docker.io")
+
+    m = _resolve.WWW_AUTH_RE.search(
+        'Bearer realm="https://ghcr.io/token",service="ghcr.io",'
+        'scope="repository:org/app:pull"')
+    check("WWW-Authenticate challenge is parsed into realm/service/scope",
+          m is not None and m.groups() == ("https://ghcr.io/token", "ghcr.io",
+                                           "repository:org/app:pull"),
+          f"parsed: {m.groups() if m else None}")
+
+
+def test_resolve_live():
+    """One real resolution against Docker Hub - the exact example the design
+    spec names. If the network is unavailable in this environment, SKIP
+    loudly rather than pass vacuously; do not simulate a network response,
+    since a mock proves the code calls urllib correctly and nothing about
+    whether the auth-challenge flow actually matches what a real registry
+    sends. Both success and failure paths were additionally verified live,
+    by hand, against Docker Hub AND ghcr.io during development - see the
+    session record for `alpine:3.19`, `nginx:latest`, and
+    `ghcr.io/github/super-linter` resolving correctly, and a genuinely
+    nonexistent tag producing a clean per-reference error rather than a
+    crash."""
+    digest, err = _resolve.resolve_digest("alpine:3.19", timeout=10)
+    if digest is None and err and any(
+            s in err for s in ("URLError", "timed out", "Errno", "ConnectionError")):
+        skip("--resolve performs a real Docker Hub lookup",
+            f"no network reachable in this environment ({err}) - the "
+            f"anonymous-token + manifest-digest flow is NOT verified live in "
+            f"this run. Verified previously against Docker Hub and ghcr.io; "
+            f"re-run with network access to re-confirm.")
+        return
+    check("--resolve fetches a real digest for a well-known public image "
+          "(alpine:3.19) via the anonymous Docker Hub token flow",
+          bool(digest) and digest.startswith("sha256:") and len(digest) == 71,
+          f"digest={digest!r} err={err!r}")
+
+    digest2, _ = _resolve.resolve_digest("library/alpine:3.19", timeout=10)
+    check("the library/ prefix and the short form resolve to the same digest",
+          digest2 == digest, f"{digest2!r} != {digest!r}")
+
+    _, err3 = _resolve.resolve_digest(
+        "nginx@sha256:" + "a" * 64, timeout=10)
+    check("an already-digest-pinned reference is not re-resolved",
+          err3 == "already digest-pinned - nothing to resolve", f"{err3!r}")
+
+
 def test_positives(data):
     r = refs_of(data)
     def has(sub, ref=None):
@@ -507,6 +574,37 @@ def test_scan_command_and_repos_analyzed(corpus, base, data, out):
           data2.get("scan_command") == fake_cmd, f"got {data2.get('scan_command')!r}")
 
 
+def test_resolve_pipeline(corpus, base):
+    """--resolve through the full driver, not just the module directly: the
+    finding for the fixture's nginx:latest carries a resolved digest and a
+    report table with a Suggested pin column, or - offline - every finding
+    carries a clean per-reference error and the finding is NOT suppressed."""
+    out = os.path.join(base, "out-resolve")
+    proc, data = run_scan(corpus, out, ("--resolve", "--fail-on", "none"))
+    check("--resolve does not change the exit code contract",
+          proc.returncode == 0, f"exit={proc.returncode} stderr={proc.stderr[-300:]}")
+
+    nginx = next((f for f in data["findings"] if f["reference"] == "nginx:latest"), None)
+    check("the nginx:latest finding carries resolve fields", nginx is not None
+          and "resolved_digest" in nginx and "resolve_error" in nginx, f"{nginx}")
+    check("--resolve never suppresses the finding itself, success or failure",
+          nginx is not None, "nginx:latest finding vanished under --resolve")
+
+    md = open(os.path.join(out, "report.md"), encoding="utf-8").read()
+    check("report.md gains the Suggested pin column only when --resolve was used",
+          "Suggested pin" in md)
+
+    if nginx and nginx.get("resolved_digest"):
+        check("a successful resolution's suggested_pin is a real digest-pinned reference",
+              nginx.get("suggested_pin", "").startswith("nginx:latest@sha256:"),
+              f"{nginx.get('suggested_pin')!r}")
+        check("the resolved suggestion appears verbatim in report.md",
+              nginx["suggested_pin"] in md)
+    else:
+        check("offline: a failed resolution still names a reason, not a crash",
+              bool(nginx.get("resolve_error")), f"{nginx}")
+
+
 def test_baseline(corpus, base, data):
     fp = next(f["fingerprint"] for f in data["findings"]
               if f["reference"] == "nginx:latest")
@@ -560,6 +658,10 @@ def main():
 
         print("Parsers and classification")
         test_unit_parsers()
+        print("\n--resolve (offline logic)")
+        test_resolve_offline()
+        print("\n--resolve (live network - skips loudly if unreachable)")
+        test_resolve_live()
         print("\nDetection passes (every pass must find its planted positive)")
         test_positives(data)
         print("\nKnown-benign lookalikes (must NOT fire)")
@@ -572,6 +674,8 @@ def main():
         test_report_shape(data, out, proc)
         print("\nScan command and repos analyzed")
         test_scan_command_and_repos_analyzed(corpus, base, data, out)
+        print("\n--resolve (full pipeline)")
+        test_resolve_pipeline(corpus, base)
         print("\nBaseline and thresholds")
         test_baseline(corpus, base, data)
         test_fail_on(corpus, base)
@@ -579,11 +683,19 @@ def main():
 
     passed = sum(1 for _, ok in results if ok)
     total = len(results)
-    print(f"\n{passed}/{total} assertions passed")
+    print(f"\n{passed}/{total} assertions passed", end="")
+    if skipped:
+        print(f", {len(skipped)} SKIPPED (not passed):")
+        for name, _ in skipped:
+            print(f"  - {name}")
+    else:
+        print()
     if passed != total:
         print(f"\n{RED}SELF-TEST FAILED - do not trust a scan from this code.{RESET}")
         return 1
     print(f"\n{GREEN}All assertions passed.{RESET}")
+    if skipped:
+        print("Note: skipped assertions were NOT verified. See above.")
     return 0
 
 
