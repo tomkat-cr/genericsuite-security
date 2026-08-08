@@ -46,7 +46,7 @@ Three things were carried over deliberately:
   claims. Boilerplate and empty scaffolding score low on purpose.
 - **The re-audit loop.** On a repeat run, every previous finding is re-checked
   against current code and marked `resolved` / `partial` / `open`. This is what
-  distinguishes teams that actually fixed their issues from teams that did not,
+  distinguishes projects that actually fixed their issues from projects that did not,
   and it is the feature that makes the skill a living check rather than a
   one-shot report.
 
@@ -274,11 +274,19 @@ Rules, each preventing a specific wrong answer:
 
 ### Input mode: `--db` (Supabase / Postgres, read-only, entirely optional)
 
-**This mode is optional and nothing else depends on it.** It exists only for
-teams whose project list already lives in a table. Skip it and the skill is
-fully functional through `--root`, `--projects`, `--corpus`, or `--org`; no
-Supabase credentials, no `psql`, no network call. The self-test does not require
-a database either — it runs against a saved payload.
+**This mode is optional and nothing else depends on it.** It exists only when
+the list of projects to scan already lives in a Supabase/Postgres table. Skip it
+and the skill is fully functional through `--root`, `--projects`, `--corpus`, or
+`--org`; no Supabase credentials, no `psql`, no network call. The self-test does
+not require a database either — it runs against a saved payload.
+
+**What the table holds is a project registry, not a project's own database.**
+`--db` reads rows that each *name* a project and point at its repository; it
+never inspects, connects to, or cares about whatever database a scanned project
+uses internally. A project written in Go against MongoDB is scanned exactly the
+same way once its row supplies a repository URL. Whether a scanned project uses
+Supabase is a *security* question — RLS disabled, anon keys with write access —
+and is handled by the security agent in stage 3, not by the input layer.
 
 `db_collect.py` replaces `extract-repos.ts` and `export-meta.ts`, which together
 read a `projects` table, derived one GitHub URL per row from a fallback chain of
@@ -352,7 +360,7 @@ Extracted rows produce a repo list that is handed to `build_corpus.py` exactly
 as `--org` mode does, so clone hardening and the corpus contract are shared
 rather than duplicated. The metadata columns are attached to each project's
 evidence bundle under `db_metadata` and surface in the report, giving the
-analyze and security agents the team's own description of what a project is
+analyze and security agents the project's own description of what it is
 meant to do — context they otherwise have to infer from the README.
 
 **The self-test covers this hermetically**, with no live database:
@@ -623,7 +631,7 @@ Profiles overlay additional agent instructions and checks:
   stage-specific `.env` files with no hardcoded secrets; log-injection
   prevention (newline sanitization before logging).
 - **`--profile ./my-rules.json`** — any path loads a user-supplied overlay, so
-  a team can encode its own conventions without forking the skill.
+  a project can encode its own conventions without forking the skill.
 
 A profile can add checks and agent instructions. It cannot remove a generic
 check or lower a severity — narrowing a scan to make it pass is how a scan stops
@@ -880,14 +888,14 @@ excluded from the pass count, never counted as a pass.
 6. **The DB connection is read-only, so results do not flow back into the
    database.** The source pipeline closed that loop by upserting
    `project_insights`; here the equivalent projection lands in
-   `insights-table.json` / `.csv` and a team wanting it in Postgres loads it
+   `insights-table.json` / `.csv` and a project wanting it in Postgres loads it
    themselves with the shipped DDL. Bought for a blast radius that ends at the
    output directory — a scanner that writes to a production database is a
    scanner nobody can safely run on a whim. The column shapes are kept
    deliberately aligned so adding the writer later is additive.
 7. **Supabase-first, not Postgres-general.** PostgREST is the only
    dependency-free transport available to a stdlib-Python package; `psql` covers
-   plain Postgres only when it happens to be installed. A team on a database
+   plain Postgres only when it happens to be installed. A project on a database
    with neither gets exit `2` and can use `--projects` or `--org` instead.
 
 ## Implementation sequencing
