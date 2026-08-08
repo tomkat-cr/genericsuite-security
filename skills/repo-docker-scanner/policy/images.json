@@ -1,0 +1,226 @@
+{
+  "name": "default-image-mutability-policy",
+  "version": "1.0",
+  "description": "Mutability classification and prioritisation policy for container image references. Scanners are policy-agnostic; everything opinionated lives here.",
+  "acceptable_classes": [
+    "digest",
+    "version",
+    "codename"
+  ],
+  "_acceptable_note": "The boundary drawn by the source playbook: codename and version tags are acceptable, anything with no version component is not. Every report states this so reviewers argue with the policy, not the data.",
+  "floating_alias_tags": [
+    "latest",
+    "stable",
+    "main",
+    "master",
+    "edge",
+    "nightly",
+    "dev",
+    "develop",
+    "staging",
+    "prod",
+    "production",
+    "release",
+    "current"
+  ],
+  "known_codenames": [
+    "wheezy",
+    "jessie",
+    "stretch",
+    "buster",
+    "bullseye",
+    "bookworm",
+    "trixie",
+    "precise",
+    "trusty",
+    "xenial",
+    "bionic",
+    "focal",
+    "jammy",
+    "noble",
+    "alpine3",
+    "sid"
+  ],
+  "_codename_note": "A codename names a fixed OS release: patch-mutable, but not a moving track like :latest. Separated from versionless variants (:alpine, :slim), which pin nothing.",
+  "registry_hosts": [
+    "ghcr.io",
+    "quay.io",
+    "gcr.io",
+    "registry.k8s.io",
+    "k8s.gcr.io",
+    "mcr.microsoft.com",
+    "docker.elastic.co",
+    "public.ecr.aws",
+    "registry.gitlab.com",
+    "docker.io",
+    "index.docker.io",
+    "registry.hub.docker.com"
+  ],
+  "ecr_host_pattern": "^[a-z0-9-]+\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com$",
+  "official_namespaces": [
+    "library"
+  ],
+  "abandoned_namespaces": [
+    "bitnamilegacy"
+  ],
+  "_abandoned_note": "Flagged regardless of tag class. A digest-pinned image from an unmaintained namespace is still a supply-chain risk; pinning does not address abandonment.",
+  "finding_flags": [
+    "abandoned_namespace"
+  ],
+  "_finding_flags_note": "Which ownership flags are findings in their own right. abandoned_namespace is: the namespace is known-dead. unverified_namespace is NOT: it describes most of Docker Hub, and promoting every such image to a finding would bury the unpinned ones. It goes to a watch list and annotates findings it touches.",
+  "self_exclude_globs": [
+    "**/skills/repo-docker-scanner/**",
+    "**/skills/repo-packages-scanner/**",
+    "**/skills/supply-chain-ioc-scan/iocs/**"
+  ],
+  "_self_exclude_note": "A scanner's own fixtures, policy and docs legitimately contain every pattern it hunts for, so scanning them reports the tool to itself. supply-chain-ioc-scan learned this first ('exclude your own tooling and transcripts'). Exclusions are COUNTED and listed in the report - a silent exclusion is how a real finding disappears.",
+  "org_owned_namespaces": [],
+  "_org_owned_note": "Images in registries the org controls may be excluded from remediation - but org images on public Docker Hub are only as safe as that account's credentials, which is exactly what these worms steal. Empty by default: opting out is a deliberate act.",
+  "priority_rules": [
+    {
+      "tier": "P0",
+      "when": {
+        "path_glob": "**/.github/workflows/*"
+      },
+      "why": "runs in CI with credentials"
+    },
+    {
+      "tier": "P0",
+      "when": {
+        "path_glob": "**/.gitlab-ci*.y*ml"
+      },
+      "why": "runs in CI with credentials"
+    },
+    {
+      "tier": "P0",
+      "when": {
+        "path_glob": "**/.github/actions/**"
+      },
+      "why": "composite action, runs in CI with credentials"
+    },
+    {
+      "tier": "P0",
+      "when": {
+        "path_glob": "**/kustomization.y*ml"
+      },
+      "why": "production desired state"
+    },
+    {
+      "tier": "P0",
+      "when": {
+        "path_glob": "**/*task-definition*.json"
+      },
+      "why": "production desired state (ECS)"
+    },
+    {
+      "tier": "P0",
+      "when": {
+        "path_glob": "**/toolset*.json"
+      },
+      "why": "shared infrastructure: self-hosted runner image"
+    },
+    {
+      "tier": "P0",
+      "when": {
+        "path_glob": "**/*.tf"
+      },
+      "why": "production desired state (Terraform)"
+    },
+    {
+      "tier": "P1",
+      "when": {
+        "path_glob": "**/docker-compose*.y*ml"
+      },
+      "why": "developer machines - the actual blast radius of token-stealing worms"
+    },
+    {
+      "tier": "P1",
+      "when": {
+        "path_glob": "**/compose*.y*ml"
+      },
+      "why": "developer machines"
+    },
+    {
+      "tier": "P1",
+      "when": {
+        "path_glob": "**/devcontainer.json"
+      },
+      "why": "developer machines"
+    },
+    {
+      "tier": "P1",
+      "when": {
+        "path_glob": "**/Dockerfile*"
+      },
+      "why": "build time; affects published artifacts"
+    },
+    {
+      "tier": "P2",
+      "when": {
+        "path_glob": "**/example*/**"
+      },
+      "why": "examples and demos"
+    },
+    {
+      "tier": "P2",
+      "when": {
+        "path_glob": "**/demo*/**"
+      },
+      "why": "examples and demos"
+    },
+    {
+      "tier": "P2",
+      "when": {
+        "path_glob": "**/docs/**"
+      },
+      "why": "documentation"
+    },
+    {
+      "tier": "P1",
+      "when": {},
+      "why": "default when no rule matches"
+    }
+  ],
+  "_priority_note": "Ordered; first match wins. Repo-level overrides (archived repos to P2) are applied before these by the scanner, since they are a property of the repository rather than the path.",
+  "infra_template_tier": "P0",
+  "infra_template_reason": "CloudFormation template - provisions production infrastructure",
+  "_infra_template_note": "Applied when the FILE CONTENT sniffs as CloudFormation (AWSTemplateFormatVersion, or a resource's Type: AWS::...), independent of every path_glob rule above and independent of directory naming convention. A real org run found a docker reference inside a CFN template that fell through to the P1 default because no glob named the directory it happened to live in - the same class of gap *.tf closes for Terraform, generalised by content instead of extension.",
+  "archived_repo_tier": "P2",
+  "_archived_note": "The correct fix for an archived repo is usually archiving harder - deleting it - not editing it.",
+  "known_benign_collisions": {
+    "key_names": [
+      "reference"
+    ],
+    "_key_names_note": "A generic `reference:` key collided with 800+ dbt column definitions in the original run. Excluded structurally: only keys whose name contains 'image' are treated as image keys.",
+    "value_prefixes": [
+      "ami-",
+      "sha256:",
+      "http://",
+      "https://",
+      "${",
+      "$(",
+      "{{"
+    ],
+    "value_suffixes": [
+      ".png",
+      ".jpg",
+      ".jpeg",
+      ".svg",
+      ".gif",
+      ".webp",
+      ".ico",
+      ".pdf",
+      ".css",
+      ".js",
+      ".html"
+    ],
+    "_value_note": "Ansible AMI ids, asset paths, URLs and template expressions are not image references. A template expression is recorded as a residual blind spot rather than a finding: the real value is composed elsewhere."
+  },
+  "template_markers": [
+    "${",
+    "$(",
+    "{{",
+    "%("
+  ],
+  "_template_note": "A reference containing one of these is composed at deploy time. It is reported as UNRESOLVED, never as clean: a scanner that cannot see the value must not imply it checked it."
+}
