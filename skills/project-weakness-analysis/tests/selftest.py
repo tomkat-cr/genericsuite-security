@@ -421,6 +421,54 @@ def test_db_requires_no_credentials_in_argv():
         check("the error names DATABASE_URL", "DATABASE_URL" in msg)
 
 
+def test_db_psql_credentials_never_reach_argv():
+    """_fetch_psql must pass DATABASE_URL's credentials to the psql child
+    process via its environment (PGUSER/PGPASSWORD/...), never as argv - argv
+    is world-readable via `ps` for the process lifetime, unlike the env of a
+    process you don't have permission to inspect."""
+    import subprocess as _subprocess
+    import db_collect
+    policy = _policy.load_policy()
+    cfg = dict(policy["db_source"])
+
+    captured = {}
+
+    class FakeCompletedProcess:
+        returncode = 0
+        stdout = b"[]"
+        stderr = b""
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["env"] = kwargs.get("env")
+        return FakeCompletedProcess()
+
+    real_run = _subprocess.run
+    db_collect.subprocess.run = fake_run
+    try:
+        env = {"DATABASE_URL": "postgres://testuser:testpass123@testhost:5432/testdb"}
+        db_collect._fetch_psql(cfg, env)
+    finally:
+        db_collect.subprocess.run = real_run
+
+    argv = captured.get("args") or []
+    child_env = captured.get("env") or {}
+    check("psql is invoked (fake_run was reached)", "args" in captured)
+    check("the password is absent from argv",
+          not any("testpass123" in str(a) for a in argv), "argv=%s" % argv)
+    check("the username is absent from argv",
+          not any("testuser" in str(a) for a in argv), "argv=%s" % argv)
+    check("the raw DATABASE_URL is absent from argv",
+          not any("testuser:testpass123" in str(a) for a in argv), "argv=%s" % argv)
+    check("the password is passed via the child process env instead",
+          child_env.get("PGPASSWORD") == "testpass123", "env=%s" % child_env)
+    check("the username is passed via the child process env instead",
+          child_env.get("PGUSER") == "testuser", "env=%s" % child_env)
+    check("host and dbname are also passed via env, not argv",
+          child_env.get("PGHOST") == "testhost" and child_env.get("PGDATABASE") == "testdb",
+          "env=%s" % child_env)
+
+
 def test_db_config_rejects_missing_column():
     import db_collect
     cfg = {"table": "projects", "slug_column": "nope", "name_column": "name",
@@ -499,6 +547,7 @@ def main():
     test_db_collect()
     test_db_limit_and_pagination_warn()
     test_db_requires_no_credentials_in_argv()
+    test_db_psql_credentials_never_reach_argv()
     test_db_config_rejects_missing_column()
     test_db_attach_metadata()
     test_db_attach_metadata_skips_missing_evidence()

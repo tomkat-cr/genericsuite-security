@@ -174,10 +174,24 @@ def _fetch_psql(cfg, env):
            "SELECT coalesce(json_agg(t), '[]'::json) FROM "
            "(SELECT %s FROM %s%s) t; COMMIT;"
            % (", ".join(ident(c) for c in columns), ident(cfg["table"]), where))
+    parsed = urllib.parse.urlparse(env["DATABASE_URL"])
+    child_env = dict(os.environ)
+    if parsed.hostname:
+        child_env["PGHOST"] = parsed.hostname
+    if parsed.port:
+        child_env["PGPORT"] = str(parsed.port)
+    if parsed.username:
+        child_env["PGUSER"] = parsed.username
+    if parsed.password:
+        child_env["PGPASSWORD"] = parsed.password
+    dbname = parsed.path.lstrip("/")
+    if dbname:
+        child_env["PGDATABASE"] = dbname
+
     try:
-        proc = subprocess.run(["psql", env["DATABASE_URL"], "-At", "-c", sql],
+        proc = subprocess.run(["psql", "-At", "-c", sql],
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              timeout=300)
+                              timeout=300, env=child_env)
     except (OSError, subprocess.SubprocessError) as e:
         raise DbError("psql failed: %s" % e)
     if proc.returncode != 0:
