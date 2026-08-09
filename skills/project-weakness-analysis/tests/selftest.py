@@ -315,6 +315,47 @@ def test_siblings_attach():
               bundle["siblings"]["docker"]["available"] is True)
 
 
+def build_crashing_stub_scanner(base):
+    """A fake 'docker' sibling scanner that crashes uncaught (exit 1) without
+    writing findings.json - the failure mode run_one() must never confuse
+    with success."""
+    scripts_dir = os.path.join(base, "stub_docker", "scripts")
+    os.makedirs(scripts_dir, exist_ok=True)
+    script_path = os.path.join(scripts_dir, "scan_images.py")
+    write(script_path,
+          "raise RuntimeError('simulated scanner crash - never completed')\n")
+    return os.path.dirname(scripts_dir)
+
+
+def test_siblings_stale_findings_not_reused_after_crash():
+    import tempfile
+    import json as _json
+    import _siblings
+    with tempfile.TemporaryDirectory() as base:
+        corpus = os.path.join(base, "corpus.json")
+        write(corpus, '{"schema_version":1,"root":"%s","repos":[]}' % base)
+
+        skill_dir = build_crashing_stub_scanner(base)
+        work_dir = os.path.join(base, "work")
+        out_dir = os.path.join(work_dir, "siblings", "docker")
+        os.makedirs(out_dir, exist_ok=True)
+        stale = os.path.join(out_dir, "findings.json")
+        with open(stale, "w", encoding="utf-8") as f:
+            _json.dump({"findings": [{"repo": "alpha",
+                                       "ref": "SHOULD-NOT-SURVIVE-A-CRASH"}]}, f)
+
+        result = _siblings.run_one("docker", skill_dir, corpus, work_dir)
+
+        check("a scanner crash (exit 1, not 0 or 2) is never reported as available",
+              result["available"] is False,
+              "got %s" % result)
+        check("a scanner crash never leaks a stale prior run's findings",
+              "alpha" not in result.get("by_project", {}),
+              "got %s" % result.get("by_project"))
+        check("the stale findings.json is removed before the crash (proves pre-run deletion)",
+              not os.path.exists(stale))
+
+
 def main():
     print("Policy and profiles")
     test_policy_loads()
@@ -338,6 +379,7 @@ def main():
     print("\nSibling scanners")
     test_siblings_absent_is_visible()
     test_siblings_attach()
+    test_siblings_stale_findings_not_reused_after_crash()
 
     passed = sum(1 for _, ok in results if ok)
     total = len(results)

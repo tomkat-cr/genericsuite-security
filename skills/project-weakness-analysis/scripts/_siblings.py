@@ -44,6 +44,18 @@ def run_one(name, skill_dir, corpus_path, work_dir):
     out_dir = os.path.join(work_dir, "siblings", name)
     os.makedirs(out_dir, exist_ok=True)
     findings_path = os.path.join(out_dir, "findings.json")
+    # Remove any findings.json left over from a prior run against this same
+    # out_dir *before* invoking the scanner. Without this, a scanner crash
+    # (uncaught exception -> exit 1, or a signal -> negative returncode) is
+    # NOT caught by the `returncode == 2` check below, so run_one() falls
+    # through to reading findings_path - silently attributing a stale prior
+    # run's findings to this run and reporting available=true. Deleting the
+    # file first guarantees a crash leaves nothing to read, so it correctly
+    # lands in the `except (OSError, ValueError)` branch below instead.
+    try:
+        os.remove(findings_path)
+    except FileNotFoundError:
+        pass
     cmd = ["python3", script, "--corpus", corpus_path,
            "--out", out_dir, "--fail-on", "none"]
     try:
