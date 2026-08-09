@@ -6,16 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `genericsuite-security` is a Claude Code **plugin** (see `.claude-plugin/marketplace.json`, plugin name `gs-security-suite`) that packages security-response skills for GenericSuite and its ecosystem. It is a submodule of the `genericsuite` monorepo — see `/Users/carlosramirez/desarrollo/genericsuite/CLAUDE.md` for cross-package conventions. This package has no application code of its own; it is entirely skills + supporting Python scripts invoked by those skills.
 
-The plugin currently ships four skills:
+The plugin currently ships five skills:
 
 - `skills/supply-chain-ioc-scan` — built in response to the Keyv/Cacheable npm supply-chain worm ("Shai-Hulud: Here We Go Again", disclosed 2026-08-04, see `CHANGELOG.md`). Answers "did this campaign touch this machine?"
 - `skills/repo-corpus` — turns an org, a user, or a local checkout into safe, attributable clones plus a `corpus.json` manifest. Produces **no findings**; it is the foundation the scanners consume.
 - `skills/repo-docker-scanner` — consumes a corpus and reports mutable container-image references, tiered P0/P1/P2 by execution context.
 - `skills/repo-packages-scanner` — consumes a corpus and reports unpinned GitHub Actions, npm/PyPI/Go/Rust/Ruby dependencies, and unpinned remote code execution, tiered P0/P1/P2. Also carries `run_gh_scan.sh`, moved unchanged from `supply-chain-ioc-scan` (see that skill's history for why).
+- `skills/project-weakness-analysis` — decides whether projects are ready and safe to run in production, scoring production-readiness and auditing security weaknesses across many projects at once, with two independent verdict axes (readiness tier and security risk level) and a re-audit loop.
 
 ## Work In Progress
 
-All three planned scanner phases are implemented: `repo-corpus` (phase 1), `repo-docker-scanner` (phase 2), `repo-packages-scanner` (phase 3).
+All three planned scanner phases are implemented: `repo-corpus` (phase 1), `repo-docker-scanner` (phase 2), `repo-packages-scanner` (phase 3). The `project-weakness-analysis` skill is complete with 266 passing assertions but has had no calibration run against real projects yet.
 
 **If you are picking this work up, read `docs/superpowers/HANDOFF.md` first** — it names the next concrete step, the decisions already made, and the open questions. The approved design is `docs/superpowers/specs/2026-08-06-repo-scanner-skills-design.md`.
 
@@ -73,6 +74,18 @@ python3 scripts/build_corpus.py --org tomkat-cr --list-only   # check scope firs
 python3 tests/selftest.py
 ```
 Exit codes here are `0` complete corpus, `1` **partial** corpus (some repos failed — every scan over it has a blind spot), `2` error. Note `1` does not mean "findings": `repo-corpus` produces none. Enumeration normally shells out to `gh`; `--repos-json PATH` substitutes a saved payload, which is how the self-test exercises enumeration without a live GitHub account.
+
+Analyze many projects for production readiness and security weaknesses (from `skills/project-weakness-analysis/`):
+```bash
+./scripts/run_weakness_analysis.sh --root ~/projects          # scan a local directory tree
+./scripts/run_weakness_analysis.sh --projects a.json          # scan an explicit list
+./scripts/run_weakness_analysis.sh --corpus corpus.json       # scan an existing corpus
+./scripts/run_weakness_analysis.sh --org myorg                # scan a GitHub org or user
+./scripts/run_weakness_analysis.sh --db postgresql://...      # scan projects from a database
+./scripts/run_weakness_analysis.sh --phase merge              # merge agent outputs without re-scanning
+python3 tests/selftest.py
+```
+Exit codes: `0` all projects pass, `1` blocked projects found (readiness gate or security gate failed), `2` error. Output under `./insights/` includes `WEAKNESS-REPORT.md`, `insights.json`, `insights-table.json`/`.csv`, `security-audit.json`, per-project JSON, and `findings.sarif`. Optional `--db` mode is unverified against live Supabase/psql (self-test uses a saved payload).
 
 ## Architecture
 

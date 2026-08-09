@@ -7,6 +7,15 @@ This project adheres to [Semantic Versioning](http://semver.org/) and [Keep a Ch
 ## [Unreleased] - YYYY-MM-DD
 
 ### Added
+- New skill `project-weakness-analysis`: decides whether projects are ready and safe to run in production, scoring production-readiness and auditing security weaknesses across many projects at once.
+  - Five input modes — a root directory (`--root`), an explicit list (`--projects`), an existing corpus (`--corpus`), a GitHub org or user (`--org`/`--user`), and an optional read-only project registry table (`--db`, Supabase PostgREST or psql). No database is required; four of the five modes involve none.
+  - Two independent verdict axes, never averaged: a readiness tier (`production-ready` / `needs-work` / `not-ready` / `unknown`) and a security risk level (`critical` … `none`). `unknown` blocks — an unscanned project is not a safe one.
+  - A deterministic pre-pass (per-project signals, tiered secret candidates, and findings from `repo-docker-scanner` and `repo-packages-scanner`) grounds two sonnet agents per project; a haiku agent writes the cross-project rollup.
+  - A re-audit loop: a second run verifies every prior finding as `resolved` / `partial` / `open`, and no prior finding is ever dropped.
+  - Output under `./insights`: `WEAKNESS-REPORT.md`, `insights.json`, a flat `insights-table.json` / `insights-table.csv` projection, `security-audit.json`, `projects/<slug>.json`, and `findings.sarif`.
+  - Optional `--profile genericsuite` checks the ecosystem's non-negotiables (scrypt-only hashing, the standard result shape, parameterized SQL, `is_safe_url()` / `is_safe_local_path()` guards).
+  - Adapted from an OSS project-triage methodology; the promotional scoring stage was dropped and the adapted methodology now ships in the skill's `references/`.
+- `.claude-plugin/marketplace.json` registers the new skill; the plugin description now covers production-readiness analysis alongside supply-chain security.
 
 ### Changed
 

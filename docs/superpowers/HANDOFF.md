@@ -206,6 +206,18 @@ package (`github/super-linter`) with the identical code path. If a
 resolution fails during real use, check whether the reference is genuinely
 a registry image before assuming the resolver is broken.
 
+## Project-weakness-analysis: production readiness and security synthesis
+
+Built as a capstone after the three scanner phases, `project-weakness-analysis` synthesizes signals and findings from the repository scanners plus project-specific deterministic passes (commitlog, lockfiles, secrets, test coverage) into two independent verdict axes: a readiness tier (production-ready / needs-work / not-ready / unknown) and a security risk level (critical … none). Both gates block deployment — unknown readiness or critical risk each prevent release.
+
+- **266 assertions passing**, covering discovery modes, evidence collection, agent task manifests, schema validation, gate logic, re-audit loops (dropping and re-adding findings across runs), output shapes (markdown, JSON, flat projections, SARIF), and bash driver safety.
+- **Five input modes**: filesystem root, explicit project list, existing corpus, GitHub org/user, and optional read-only database (Supabase PostgREST or psql).
+- **Deterministic pre-pass** grounds two sonnet agents per project (readiness and security analysis); a haiku agent writes the cross-project rollup.
+- **Re-audit loop**: a second run verifies every prior finding as resolved/partial/open; no finding is ever dropped.
+- **`--db` mode is unverified against live Supabase or psql** — the self-test uses a saved query payload. `--org`, `--user`, `--root`, and `--projects` modes are fully tested.
+- **Readiness thresholds have zero calibration runs against real projects** — the `readiness_rules` table in `policy/weakness.json` is defensible in the abstract but untested on real data. A real run will almost certainly reveal tier-boundary mismatches: projects clustering in one tier means the gate is wrong. Retuning is a `policy/weakness.json` edit, never a code change. The brief's Step 7 (explicitly deferred as "requires a human decision") is the calibration run — read the tier histogram, retune, and report back before treating `--fail-on` as a CI gate.
+- **Output under `./insights/`**: `WEAKNESS-REPORT.md`, `insights.json`, `insights-table.json`/`.csv`, `security-audit.json`, per-project JSON files, and `findings.sarif`.
+
 ## What phase 1 built (the interface phase 2 consumes)
 
 `repo-corpus` turns "an org, a user, or this directory" into safe, attributable
