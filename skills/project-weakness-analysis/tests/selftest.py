@@ -469,6 +469,60 @@ def test_db_psql_credentials_never_reach_argv():
           "env=%s" % child_env)
 
 
+def test_db_psql_percent_encoded_credentials_and_query_options():
+    """DATABASE_URL credentials may be percent-encoded (e.g. %40 for a
+    literal @, common in generated Postgres/Supabase secrets) and libpq
+    query-string options like sslmode/connect_timeout must survive into the
+    child env as PGSSLMODE/PGCONNECT_TIMEOUT - previously both were silently
+    dropped/mangled when the URI was parsed instead of passed to psql whole."""
+    import subprocess as _subprocess
+    import db_collect
+    policy = _policy.load_policy()
+    cfg = dict(policy["db_source"])
+
+    captured = {}
+
+    class FakeCompletedProcess:
+        returncode = 0
+        stdout = b"[]"
+        stderr = b""
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["env"] = kwargs.get("env")
+        return FakeCompletedProcess()
+
+    real_run = _subprocess.run
+    db_collect.subprocess.run = fake_run
+    try:
+        env = {"DATABASE_URL":
+               "postgres://us%40er:pa%40ss@testhost:5432/testdb"
+               "?sslmode=require&connect_timeout=10"}
+        db_collect._fetch_psql(cfg, env)
+    finally:
+        db_collect.subprocess.run = real_run
+
+    argv = captured.get("args") or []
+    child_env = captured.get("env") or {}
+    check("psql is invoked (fake_run was reached)", "args" in captured)
+    check("PGUSER is percent-decoded",
+          child_env.get("PGUSER") == "us@er", "env=%s" % child_env)
+    check("PGPASSWORD is percent-decoded",
+          child_env.get("PGPASSWORD") == "pa@ss", "env=%s" % child_env)
+    check("query string sslmode becomes PGSSLMODE",
+          child_env.get("PGSSLMODE") == "require", "env=%s" % child_env)
+    check("query string connect_timeout becomes PGCONNECT_TIMEOUT",
+          child_env.get("PGCONNECT_TIMEOUT") == "10", "env=%s" % child_env)
+    check("the decoded username is absent from argv",
+          not any("us@er" in str(a) for a in argv), "argv=%s" % argv)
+    check("the decoded password is absent from argv",
+          not any("pa@ss" in str(a) for a in argv), "argv=%s" % argv)
+    check("the raw percent-encoded password is absent from argv",
+          not any("pa%40ss" in str(a) for a in argv), "argv=%s" % argv)
+    check("the raw DATABASE_URL is absent from argv",
+          not any("us%40er:pa%40ss" in str(a) for a in argv), "argv=%s" % argv)
+
+
 def test_db_config_rejects_missing_column():
     import db_collect
     cfg = {"table": "projects", "slug_column": "nope", "name_column": "name",
@@ -548,6 +602,7 @@ def main():
     test_db_limit_and_pagination_warn()
     test_db_requires_no_credentials_in_argv()
     test_db_psql_credentials_never_reach_argv()
+    test_db_psql_percent_encoded_credentials_and_query_options()
     test_db_config_rejects_missing_column()
     test_db_attach_metadata()
     test_db_attach_metadata_skips_missing_evidence()

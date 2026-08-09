@@ -181,12 +181,18 @@ def _fetch_psql(cfg, env):
     if parsed.port:
         child_env["PGPORT"] = str(parsed.port)
     if parsed.username:
-        child_env["PGUSER"] = parsed.username
+        child_env["PGUSER"] = urllib.parse.unquote(parsed.username)
     if parsed.password:
-        child_env["PGPASSWORD"] = parsed.password
+        child_env["PGPASSWORD"] = urllib.parse.unquote(parsed.password)
     dbname = parsed.path.lstrip("/")
     if dbname:
-        child_env["PGDATABASE"] = dbname
+        child_env["PGDATABASE"] = urllib.parse.unquote(dbname)
+    if parsed.query:
+        query_params = urllib.parse.parse_qs(parsed.query)
+        for key, values in query_params.items():
+            if not values:
+                continue
+            child_env["PG%s" % key.upper()] = values[0]
 
     try:
         proc = subprocess.run(["psql", "-At", "-c", sql],
