@@ -249,7 +249,7 @@ if [ "$PHASE" = "merge" ]; then
 import json,sys
 d=json.load(open('$OUT/insights.json'))
 n=sum(1 for p in d['projects'] if p.get('blocked'))
-print(n)")"
+print(n)")" || exit 2
   [ -z "$KEEP_WORK" ] && echo "(.work/ kept for inspection; remove it yourself if unwanted)"
 
   echo

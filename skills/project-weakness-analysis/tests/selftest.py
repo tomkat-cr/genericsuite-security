@@ -1026,6 +1026,7 @@ def main():
     test_driver_bash32_safe()
     test_driver_no_input_exits_2()
     test_gate_exit_codes()
+    test_driver_blocked_computation_exits_2_on_bad_insights()
 
     passed = sum(1 for _, ok in results if ok)
     total = len(results)
@@ -1092,6 +1093,49 @@ def test_gate_exit_codes():
     merge_insights.apply_gate(p4, policy, "none", "needs-work")
     check("--fail-on-readiness needs-work also blocks needs-work",
           set(x["project_slug"] for x in p4 if x["blocked"]) == set(("b", "c")))
+
+
+def test_driver_blocked_computation_exits_2_on_bad_insights():
+    """A malformed/unreadable insights.json at the final BLOCKED= step must
+    make the driver exit 2, never fall through to the "nothing blocked, exit
+    0" branch. This extracts the real BLOCKED= block out of the shipped
+    driver (not a hand copy) so a regression - e.g. someone dropping the
+    trailing `|| exit 2` again - is caught here, not just eyeballed in review.
+    """
+    import subprocess
+    import tempfile
+    import re
+    import shlex
+
+    path = os.path.join(SCRIPTS, "run_weakness_analysis.sh")
+    with open(path, "r", encoding="utf-8") as f:
+        src = f.read()
+
+    m = re.search(
+        r'BLOCKED="\$\(python3 -c "\n.*?print\(n\)"\)"[^\n]*',
+        src, re.S)
+    check("found the BLOCKED= computation block in the driver", m is not None)
+    if not m:
+        return
+    block = m.group(0)
+    check("BLOCKED= computation is chained with || exit 2 (matches every "
+          "other python3 call in this file)",
+          re.search(r'\|\|\s*exit\s+2\s*$', block) is not None,
+          "block: %r" % block)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        insights_path = os.path.join(tmp, "insights.json")
+        write(insights_path, "{not valid json")
+
+        script = "set -uo pipefail\nOUT=%s\n%s\necho UNREACHABLE_BLOCKED=$BLOCKED\nexit 0\n" % (
+            shlex.quote(tmp), block)
+        proc = subprocess.run(["bash", "-c", script], stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=30)
+        out = (proc.stdout + proc.stderr).decode("utf-8", "replace")
+        check("malformed insights.json at the BLOCKED= step exits 2, not 0",
+              proc.returncode == 2, "got %d, output: %s" % (proc.returncode, out))
+        check("script never falls through past the failed BLOCKED= computation",
+              "UNREACHABLE_BLOCKED" not in out, "output: %s" % out)
 
 
 if __name__ == "__main__":
