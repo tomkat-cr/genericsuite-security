@@ -218,6 +218,51 @@ def merge(evidence_dir, agents_dir, policy, prior_audit=None):
     return {"projects": projects, "audit": audit, "blind_spots": blind_spots}
 
 
+def corpus_blind_spots(corpus_path):
+    """Read corpus.json's totals.failed and top-level warnings, if present.
+
+    Degrades gracefully: a missing or unparsable file yields no blind spots,
+    never a crash - this mirrors every other optional data source in this
+    skill (sibling scanners, prior audit).
+    """
+    if not corpus_path or not os.path.isfile(corpus_path):
+        return []
+    try:
+        with open(corpus_path, "r", encoding="utf-8") as f:
+            corpus = json.load(f)
+    except (OSError, ValueError):
+        return []
+
+    spots = []
+    failed = (corpus.get("totals") or {}).get("failed")
+    if isinstance(failed, int) and failed > 0:
+        spots.append(
+            "corpus: %d repo(s) failed to clone - every scan over this "
+            "corpus has a blind spot" % failed)
+    for w in corpus.get("warnings") or []:
+        spots.append("corpus: %s" % w)
+    return spots
+
+
+def discovery_blind_spots(discovery_stats_path):
+    """Read discover_projects.py's --root DiscoveryStats.as_dict(), if present.
+
+    Degrades gracefully: a missing or unparsable file yields no blind spots.
+    """
+    if not discovery_stats_path or not os.path.isfile(discovery_stats_path):
+        return []
+    try:
+        with open(discovery_stats_path, "r", encoding="utf-8") as f:
+            stats = json.load(f)
+    except (OSError, ValueError):
+        return []
+
+    truncated = stats.get("truncated")
+    if truncated:
+        return ["discovery: %s" % truncated]
+    return []
+
+
 def apply_gate(projects, policy, fail_on, fail_on_readiness):
     """Mark each project blocked, and return True if any is."""
     order = policy["severity_order"]
@@ -249,6 +294,12 @@ def main(argv=None):
     ap.add_argument("--profile", default="generic")
     ap.add_argument("--fail-on", default=None)
     ap.add_argument("--fail-on-readiness", default=None)
+    ap.add_argument("--corpus", default=None,
+                     help="optional corpus.json - folds totals.failed and "
+                          "warnings into blind_spots")
+    ap.add_argument("--discovery-stats", default=None,
+                     help="optional discovery.json (DiscoveryStats.as_dict()) "
+                          "- folds truncation into blind_spots")
     args = ap.parse_args(argv)
 
     try:
@@ -266,6 +317,8 @@ def main(argv=None):
             sys.stderr.write("WARNING: prior audit unreadable: %s\n" % e)
 
     res = merge(args.evidence, args.agents, policy, prior_audit=prior)
+    res["blind_spots"].extend(corpus_blind_spots(args.corpus))
+    res["blind_spots"].extend(discovery_blind_spots(args.discovery_stats))
     fail_on = args.fail_on or policy["gate_defaults"]["fail_on"]
     fail_readiness = args.fail_on_readiness or policy["gate_defaults"]["fail_on_readiness"]
     apply_gate(res["projects"], policy, fail_on, fail_readiness)

@@ -15,8 +15,8 @@ rather than assumed.
 This methodology is adapted from an internal OSS-project-triage pipeline
 (`tmp/project-analysis/analysis/METHODOLOGY.md` in this checkout). That source
 targeted deciding which of many submitted community projects were polished
-enough to feature and promote — a different question from "is this safe to
-run in production." `tmp/` is gitignored in this package, so nothing under it
+enough to feature and showcase publicly — a different question from "is this
+safe to run in production." `tmp/` is gitignored in this package, so nothing under it
 survives a fresh clone; this file is the surviving, adapted copy, rewritten
 for a production-readiness and security audience.
 
@@ -34,7 +34,7 @@ what the score is used for:
   report.
 
 Everything specific to choosing what to feature — live-demo fetching, a
-readiness-to-feature rubric, promotional tiers, and a marketing-style
+readiness-to-feature rubric, marketing tiers, and a marketing-style
 single-sentence summary — was dropped entirely. None of it answers whether a
 project is safe to run.
 

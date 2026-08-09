@@ -869,6 +869,108 @@ def test_resolved_findings_do_not_raise_risk():
               [_finding("critical", "old", "resolved")], policy) == "none")
 
 
+def test_merge_corpus_blind_spots():
+    import tempfile
+    import json as _json
+    import merge_insights
+    with tempfile.TemporaryDirectory() as base:
+        corpus_path = os.path.join(base, "corpus.json")
+        with open(corpus_path, "w", encoding="utf-8") as f:
+            _json.dump({"totals": {"enumerated": 5, "selected": 5, "cloned": 3,
+                                    "failed": 2, "skipped": 0},
+                        "warnings": ["enumeration truncated at 100 repos"]}, f)
+        spots = merge_insights.corpus_blind_spots(corpus_path)
+        check("corpus.json's totals.failed surfaces in blind spots",
+              any("2" in s and "failed" in s for s in spots), "got %s" % spots)
+        check("corpus.json's warnings surface in blind spots",
+              any("enumeration truncated at 100 repos" in s for s in spots),
+              "got %s" % spots)
+
+        zero_path = os.path.join(base, "corpus-clean.json")
+        with open(zero_path, "w", encoding="utf-8") as f:
+            _json.dump({"totals": {"failed": 0}, "warnings": []}, f)
+        check("a corpus with no failures and no warnings adds no blind spots",
+              merge_insights.corpus_blind_spots(zero_path) == [])
+
+    check("a nonexistent corpus path yields no blind spots, no crash",
+          merge_insights.corpus_blind_spots("/nonexistent/corpus.json") == [])
+    check("a None corpus path yields no blind spots, no crash",
+          merge_insights.corpus_blind_spots(None) == [])
+
+
+def test_merge_discovery_blind_spots():
+    import tempfile
+    import json as _json
+    import merge_insights
+    with tempfile.TemporaryDirectory() as base:
+        disc_path = os.path.join(base, "discovery.json")
+        with open(disc_path, "w", encoding="utf-8") as f:
+            _json.dump({"unreadable": [], "truncated": "max_depth=3 reached",
+                        "pruned": 0}, f)
+        spots = merge_insights.discovery_blind_spots(disc_path)
+        check("discovery.json's truncated field surfaces in blind spots",
+              any("max_depth=3 reached" in s for s in spots), "got %s" % spots)
+
+        clean_path = os.path.join(base, "discovery-clean.json")
+        with open(clean_path, "w", encoding="utf-8") as f:
+            _json.dump({"unreadable": [], "truncated": None, "pruned": 4}, f)
+        check("discovery stats with truncated=null add no blind spots",
+              merge_insights.discovery_blind_spots(clean_path) == [])
+
+    check("a nonexistent discovery-stats path yields no blind spots, no crash",
+          merge_insights.discovery_blind_spots("/nonexistent/discovery.json") == [])
+    check("a None discovery-stats path yields no blind spots, no crash",
+          merge_insights.discovery_blind_spots(None) == [])
+
+
+def test_merge_main_wires_corpus_and_discovery_into_insights_json():
+    import tempfile
+    import json as _json
+    import merge_insights
+    with tempfile.TemporaryDirectory() as base:
+        ev, ag = _merge_fixture(base, {"a": _valid_analysis()}, {"a": _valid_security()})
+        out = os.path.join(base, "out")
+        corpus_path = os.path.join(base, "corpus.json")
+        with open(corpus_path, "w", encoding="utf-8") as f:
+            _json.dump({"totals": {"failed": 3}, "warnings": []}, f)
+        disc_path = os.path.join(base, "discovery.json")
+        with open(disc_path, "w", encoding="utf-8") as f:
+            _json.dump({"unreadable": [], "truncated": "--limit=10 hit",
+                        "pruned": 0}, f)
+        rc = merge_insights.main(["--evidence", ev, "--agents", ag, "--out", out,
+                                   "--profile", "generic",
+                                   "--corpus", corpus_path,
+                                   "--discovery-stats", disc_path])
+        check("merge_insights.main succeeds with --corpus/--discovery-stats", rc == 0)
+        with open(os.path.join(out, "insights.json"), "r", encoding="utf-8") as f:
+            insights = _json.load(f)
+        check("corpus failure blind spot reaches insights.json",
+              any("3 repo(s) failed" in b for b in insights["blind_spots"]),
+              "got %s" % insights["blind_spots"])
+        check("discovery truncation blind spot reaches insights.json",
+              any("--limit=10 hit" in b for b in insights["blind_spots"]),
+              "got %s" % insights["blind_spots"])
+
+
+def test_merge_main_corpus_and_discovery_flags_are_optional():
+    import tempfile
+    import json as _json
+    import merge_insights
+    with tempfile.TemporaryDirectory() as base:
+        ev, ag = _merge_fixture(base, {"a": _valid_analysis()}, {"a": _valid_security()})
+        out = os.path.join(base, "out")
+        rc = merge_insights.main(["--evidence", ev, "--agents", ag, "--out", out,
+                                   "--profile", "generic"])
+        check("merge_insights.main succeeds without --corpus/--discovery-stats",
+              rc == 0)
+        with open(os.path.join(out, "insights.json"), "r", encoding="utf-8") as f:
+            insights = _json.load(f)
+        check("omitting --corpus/--discovery-stats adds no spurious blind spots",
+              not any(b.startswith("corpus:") or b.startswith("discovery:")
+                      for b in insights["blind_spots"]),
+              "got %s" % insights["blind_spots"])
+
+
 def _insights_fixture():
     return {"schema_version": 1, "generated_at": "2026-08-08", "profile": "generic",
             "blind_spots": ["beta: analyze output unusable - no output file"],
@@ -1015,6 +1117,10 @@ def main():
     test_reaudit_carries_findings_forward()
     test_merge_record_carries_reaudit_fields()
     test_resolved_findings_do_not_raise_risk()
+    test_merge_corpus_blind_spots()
+    test_merge_discovery_blind_spots()
+    test_merge_main_wires_corpus_and_discovery_into_insights_json()
+    test_merge_main_corpus_and_discovery_flags_are_optional()
 
     print("\nReport, projection, CSV and SARIF")
     test_report_generation()
@@ -1024,6 +1130,8 @@ def main():
 
     print("\nDriver and gate")
     test_driver_bash32_safe()
+    test_driver_merge_phase_wires_corpus_and_discovery_flags()
+    test_driver_corpus_json_defined_before_merge_phase_under_set_u()
     test_driver_no_input_exits_2()
     test_gate_exit_codes()
     test_driver_blocked_computation_exits_2_on_bad_insights()
@@ -1058,6 +1166,39 @@ def test_driver_bash32_safe():
     check("driver captures the invocation before parsing",
           "WEAKNESS_INVOKED_CMD" in src)
     check("driver runs the self-test", "selftest.py" in src)
+
+
+def test_driver_merge_phase_wires_corpus_and_discovery_flags():
+    path = os.path.join(SCRIPTS, "run_weakness_analysis.sh")
+    with open(path, "r", encoding="utf-8") as f:
+        src = f.read()
+    check("driver's merge phase conditionally passes --corpus",
+          '--corpus $CORPUS_JSON' in src)
+    check("driver's merge phase conditionally passes --discovery-stats",
+          '--discovery-stats $WORK/discovery.json' in src)
+    check("the merge_insights.py invocation forwards CORPUS_ARG and DISC_ARG",
+          "$CORPUS_ARG $DISC_ARG" in src)
+
+
+def test_driver_corpus_json_defined_before_merge_phase_under_set_u():
+    # CORPUS_JSON must be assigned before the `if [ "$PHASE" = "collect" ]`
+    # branch (not only inside it), because a `--phase merge` invocation is a
+    # separate script run that never executes that branch. Under `set -u`,
+    # referencing an unset CORPUS_JSON in `[ -f "$CORPUS_JSON" ]` would abort
+    # the whole run with "unbound variable" instead of degrading gracefully.
+    path = os.path.join(SCRIPTS, "run_weakness_analysis.sh")
+    with open(path, "r", encoding="utf-8") as f:
+        src = f.read()
+    work_idx = src.index('WORK="$OUT/.work"')
+    # Deliberately the collect-BLOCK header ("; then"), not the earlier
+    # "no input mode given" guard at the top of the file, which shares the
+    # `if [ "$PHASE" = "collect" ]` prefix but is a different if-statement.
+    collect_idx = src.index('if [ "$PHASE" = "collect" ]; then')
+    default_idx = src.index('CORPUS_JSON="$WORK/corpus.json"')
+    check("CORPUS_JSON is defaulted after WORK and before the collect-phase "
+          "branch, so --phase merge never reads it unset under set -u",
+          work_idx < default_idx < collect_idx,
+          "work=%d default=%d collect=%d" % (work_idx, default_idx, collect_idx))
 
 
 def test_driver_no_input_exits_2():
@@ -1180,7 +1321,12 @@ def test_skill_md_and_references():
 
 def test_no_team_vocabulary_anywhere():
     import re
-    bad = re.compile(r"\b(teams?|hackathon|victims?|donors?)\b", re.I)
+    bad = re.compile(
+        r"\b(teams?|hackathon|victims?|donors?|"
+        r"promote[sd]?|promoting|promotion|"
+        r"spotlight(s|ed|ing)?|diffusion)\b",
+        re.I,
+    )
     offenders = []
     # selftest.py itself is excluded: this very check's word list and regex
     # necessarily spell out the banned terms as literals in order to detect

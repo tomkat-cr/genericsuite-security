@@ -120,6 +120,16 @@ EVIDENCE="$WORK/evidence"
 AGENTS="$WORK/agents"
 mkdir -p "$WORK" "$EVIDENCE" "$AGENTS/out" || { echo "cannot write to $OUT" >&2; exit 2; }
 
+# Defaulted here (not only inside the collect-phase block below) so a
+# `--phase merge` invocation - a separate script run that never executes the
+# collect block - has CORPUS_JSON defined under `set -u` instead of aborting
+# on first reference. This matches where collect writes the manifest for
+# every input mode except `--corpus` (which points at the user's own file and
+# is never copied into .work/); for that mode the merge-phase lookup below
+# simply finds nothing at this default path and skips gracefully, which is
+# correct since --corpus/--discovery-stats are optional, best-effort inputs.
+CORPUS_JSON="$WORK/corpus.json"
+
 # The self-test is the only evidence that the detectors detect. A scanner that
 # checks nothing and reports clean looks exactly like a working one.
 if [ "${WEAKNESS_SKIP_SELFTEST:-0}" = "1" ]; then
@@ -235,9 +245,15 @@ if [ "$PHASE" = "merge" ]; then
   PRIOR_ARG=""; [ -f "$PRIOR" ] && PRIOR_ARG="--prior-audit $PRIOR"
   FO_ARG="";  [ -n "$FAIL_ON" ] && FO_ARG="--fail-on $FAIL_ON"
   FR_ARG="";  [ -n "$FAIL_ON_READINESS" ] && FR_ARG="--fail-on-readiness $FAIL_ON_READINESS"
+  # Both optional: corpus.json (repo-corpus's clone-failure/warning record) and
+  # discovery.json (discover_projects.py's --stats-json, --root mode only) may
+  # not exist - e.g. --corpus/--projects input modes never write the latter.
+  # merge_insights.py degrades gracefully when either flag is omitted.
+  CORPUS_ARG=""; [ -f "$CORPUS_JSON" ] && CORPUS_ARG="--corpus $CORPUS_JSON"
+  DISC_ARG=""; [ -f "$WORK/discovery.json" ] && DISC_ARG="--discovery-stats $WORK/discovery.json"
   # shellcheck disable=SC2086
   python3 "$SCRIPTS/merge_insights.py" --evidence "$EVIDENCE" --agents "$AGENTS" \
-    --out "$OUT" --profile "$PROFILE" $PRIOR_ARG $FO_ARG $FR_ARG || exit 2
+    --out "$OUT" --profile "$PROFILE" $PRIOR_ARG $FO_ARG $FR_ARG $CORPUS_ARG $DISC_ARG || exit 2
 
   echo "### Step 6: render the report"
   DIGEST_ARG=""; [ -f "$WORK/digest.md" ] && DIGEST_ARG="--digest $WORK/digest.md"
