@@ -229,4 +229,5 @@ tmp/
 .worktrees/
 
 # project-weakness-analysis working directory (regenerable)
-insights/.work/
+# insights/.work/
+insights/

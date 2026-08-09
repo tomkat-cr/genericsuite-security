@@ -1621,7 +1621,11 @@ def test_no_team_vocabulary_anywhere():
     # under tests/, e.g. fixtures).
     excluded = os.path.join(HERE, "selftest.py")
     for root, dirs, files in os.walk(SKILL):
-        dirs[:] = [d for d in dirs if d not in ("__pycache__", ".git")]
+        # "insights" is this skill's own regenerable, gitignored output
+        # directory (see SKILL.md's Output section) - it is scan results,
+        # not skill content, and can legitimately contain ordinary English
+        # matches (e.g. a sibling scanner's report prose using "promoting").
+        dirs[:] = [d for d in dirs if d not in ("__pycache__", ".git", "insights")]
         for fn in files:
             if not fn.endswith((".md", ".py", ".json", ".sh", ".sql")):
                 continue
