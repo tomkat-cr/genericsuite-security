@@ -1532,7 +1532,10 @@ git commit -m "feat(project-weakness-analysis): fold sibling scanner findings in
   - `extract_repo_url(row, cfg) -> (url|None, source_column|None)`
   - `build_repo_list(rows, cfg, limit=None) -> (selected, skipped, warnings)` where `selected` is `[{"slug", "name", "repo_url", "repo_source_field", "db_metadata"}]` and `skipped` is `[{"slug", "reason"}]`.
   - `fetch_rows(cfg, rows_json=None) -> (rows, warnings)` — raises `DbError` when no transport is configured.
+  - `attach_metadata(evidence_dir, selected) -> None` — merges each project's `name` and `repo_source_field` into its evidence bundle's `db_metadata` dict (Task 4's `collect()` always writes `db_metadata: {}`; nothing else populates it, so this is the only place the registry's metadata ever reaches an evidence bundle). Consumed by Task 10's driver in `--db` mode, after `collect_signals.py` has already written the evidence files. A slug in `selected` with no matching evidence file (e.g. it failed to clone) is skipped, not an error — the corpus is the source of truth for who actually got scanned.
   - CLI: `python3 db_collect.py --out PATH [--db-config PATH] [--db-rows-json PATH] [--db-limit N] [--profile NAME]`, writing `{"selected": [...], "skipped": [...], "warnings": [...]}`.
+
+**Why `attach_metadata` exists — a gap the controller caught between tasks:** Task 4's `collect()` (already implemented) leaves `db_metadata` as an empty dict with no wiring documented for who fills it. Task 8's `merge_insights.py` (not yet implemented) reads `ev.get("db_metadata", {}).get("name")` and `ev.get("db_metadata", {}).get("repo_source_field")` — i.e. it expects `name` and `repo_source_field` NESTED inside `db_metadata` on the evidence bundle, not as separate top-level fields. `attach_metadata` is what actually produces that shape; without it, `--db` mode would silently run without ever surfacing the registry's metadata to the agents or the report, even though `db_collect.py` collected it correctly. This does not affect the other four input modes.
 
 - [ ] **Step 1: Create the fixture**
 
@@ -1639,6 +1642,42 @@ def test_db_config_rejects_missing_column():
         check("a config naming a missing column fails loudly", False, "no exception")
     except db_collect.DbError:
         check("a config naming a missing column fails loudly", True)
+
+
+def test_db_attach_metadata():
+    import tempfile
+    import json as _json
+    import db_collect
+    with tempfile.TemporaryDirectory() as base:
+        ev = os.path.join(base, "evidence")
+        os.makedirs(ev)
+        with open(os.path.join(ev, "alpha.json"), "w", encoding="utf-8") as f:
+            _json.dump({"project_slug": "alpha", "db_metadata": {}}, f)
+        selected = [{"slug": "alpha", "name": "Alpha", "repo_url": "https://github.com/acme/alpha",
+                    "repo_source_field": "contribute_in_url",
+                    "db_metadata": {"lifecycle_status": "active"}}]
+        db_collect.attach_metadata(ev, selected)
+        with open(os.path.join(ev, "alpha.json"), "r", encoding="utf-8") as f:
+            bundle = _json.load(f)
+        check("attach_metadata merges name into db_metadata",
+              bundle["db_metadata"]["name"] == "Alpha")
+        check("attach_metadata merges repo_source_field into db_metadata",
+              bundle["db_metadata"]["repo_source_field"] == "contribute_in_url")
+        check("attach_metadata preserves the original metadata columns",
+              bundle["db_metadata"]["lifecycle_status"] == "active")
+
+
+def test_db_attach_metadata_skips_missing_evidence():
+    import tempfile
+    import db_collect
+    with tempfile.TemporaryDirectory() as base:
+        ev = os.path.join(base, "evidence")
+        os.makedirs(ev)
+        selected = [{"slug": "ghost", "name": "Ghost", "repo_url": "https://github.com/acme/ghost",
+                    "repo_source_field": "project_url", "db_metadata": {}}]
+        db_collect.attach_metadata(ev, selected)  # must not raise
+        check("attach_metadata does not create a file for a project with no evidence",
+              not os.path.isfile(os.path.join(ev, "ghost.json")))
 ```
 
 Register in `main()`:
@@ -1649,6 +1688,8 @@ Register in `main()`:
     test_db_limit_and_pagination_warn()
     test_db_requires_no_credentials_in_argv()
     test_db_config_rejects_missing_column()
+    test_db_attach_metadata()
+    test_db_attach_metadata_skips_missing_evidence()
 ```
 
 - [ ] **Step 3: Run the tests to verify they fail**
@@ -1764,6 +1805,35 @@ def build_repo_list(rows, cfg, limit=None):
                         % (limit, len(selected) - limit))
         selected = selected[:limit]
     return selected, skipped, warnings
+
+
+def attach_metadata(evidence_dir, selected):
+    """Merge each project's name and repo_source_field into its evidence
+    bundle's db_metadata, so merge_insights.py can read both from one place.
+    A project with no matching evidence file (e.g. it failed to clone) is
+    skipped, not an error - the corpus, not the registry, decides who
+    actually got scanned.
+    """
+    by_slug = {row["slug"]: row for row in selected}
+    for fname in sorted(os.listdir(evidence_dir)):
+        if not fname.endswith(".json"):
+            continue
+        path = os.path.join(evidence_dir, fname)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                bundle = json.load(f)
+        except (OSError, ValueError):
+            continue
+        slug = bundle.get("project_slug") or os.path.splitext(fname)[0]
+        row = by_slug.get(slug)
+        if not row:
+            continue
+        merged = dict(row.get("db_metadata") or {})
+        merged["name"] = row.get("name")
+        merged["repo_source_field"] = row.get("repo_source_field")
+        bundle["db_metadata"] = merged
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(bundle, f, indent=2)
 
 
 def _fetch_postgrest(cfg, env):
@@ -3654,6 +3724,20 @@ if [ "$PHASE" = "collect" ]; then
   # shellcheck disable=SC2086
   python3 "$SCRIPTS/collect_signals.py" --corpus "$CORPUS_JSON" --out "$EVIDENCE" \
     --profile "$PROFILE" $SIB_ARG || exit 2
+
+  # --db mode only: fold the registry's per-project metadata (name,
+  # repo_source_field, and the configured metadata_columns) into the
+  # evidence bundles collect_signals.py just wrote. Nothing else populates
+  # db_metadata - see Task 6's attach_metadata.
+  if [ "$MODE" = "db" ] && [ -s "$WORK/db-projects.json" ]; then
+    python3 -c "
+import json, sys
+sys.path.insert(0, '$SCRIPTS')
+import db_collect
+d = json.load(open('$WORK/db-projects.json'))
+db_collect.attach_metadata('$EVIDENCE', d['selected'])
+" || exit 2
+  fi
 
   echo "### Step 4: build the agent task manifest"
   PRIOR="$OUT/security-audit.json"
