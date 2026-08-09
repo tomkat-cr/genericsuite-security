@@ -356,6 +356,120 @@ def test_siblings_stale_findings_not_reused_after_crash():
               not os.path.exists(stale))
 
 
+def test_db_collect():
+    import db_collect
+    policy = _policy.load_policy()
+    cfg = policy["db_source"]
+    fixture = os.path.join(HERE, "fixtures", "db-rows.json")
+    rows, warnings = db_collect.fetch_rows(cfg, rows_json=fixture)
+    selected, skipped, warns = db_collect.build_repo_list(rows, cfg)
+
+    by_slug = {s["slug"]: s for s in selected}
+    skips = {s["slug"]: s["reason"] for s in skipped}
+
+    check("contribute_in_url wins over project_url",
+          by_slug["alpha"]["repo_source_field"] == "contribute_in_url")
+    check("project_url is used when contribute_in_url is empty",
+          by_slug["beta"]["repo_source_field"] == "project_url")
+    check("a URL is found inside description_markdown",
+          by_slug["gamma"]["repo_source_field"] == "description_markdown")
+    check("trailing punctuation is stripped",
+          by_slug["gamma"]["repo_url"].endswith("/acme/gamma"),
+          "got %s" % by_slug["gamma"]["repo_url"])
+    check("a .git suffix does not create a second project",
+          "alpha-dup" not in by_slug)
+    check("a duplicate row is recorded, not dropped",
+          skips.get("alpha-dup", "").startswith("duplicate-of:"))
+    check("a row with no GitHub URL is recorded, not dropped",
+          skips.get("delta") == "no-repo-url")
+    check("a non-GitHub URL is recorded as no-repo-url",
+          skips.get("epsilon") == "no-repo-url")
+    check("every input row is accounted for",
+          len(selected) + len(skipped) == len(rows))
+    check("db_metadata is carried through",
+          by_slug["alpha"]["db_metadata"].get("lifecycle_status") == "active")
+
+
+def test_db_limit_and_pagination_warn():
+    import db_collect
+    policy = _policy.load_policy()
+    cfg = dict(policy["db_source"])
+    fixture = os.path.join(HERE, "fixtures", "db-rows.json")
+    rows, _ = db_collect.fetch_rows(cfg, rows_json=fixture)
+    selected, skipped, warns = db_collect.build_repo_list(rows, cfg, limit=1)
+    check("--db-limit caps the selection", len(selected) == 1)
+    check("--db-limit truncation warns", any("limit" in w.lower() for w in warns))
+
+    cfg_page = dict(cfg)
+    cfg_page["page_size"] = len(rows)
+    _, _, page_warns = db_collect.build_repo_list(rows, cfg_page)
+    check("a page-boundary result warns",
+          any("page" in w.lower() for w in page_warns))
+
+
+def test_db_requires_no_credentials_in_argv():
+    import db_collect
+    policy = _policy.load_policy()
+    cfg = dict(policy["db_source"])
+    try:
+        db_collect.fetch_rows(cfg, rows_json=None, env={})
+        check("no transport configured raises DbError", False, "no exception raised")
+    except db_collect.DbError as e:
+        msg = str(e)
+        check("no transport configured raises DbError", True)
+        check("the error names SUPABASE_URL", "SUPABASE_URL" in msg)
+        check("the error names DATABASE_URL", "DATABASE_URL" in msg)
+
+
+def test_db_config_rejects_missing_column():
+    import db_collect
+    cfg = {"table": "projects", "slug_column": "nope", "name_column": "name",
+           "repo_url_columns": ["project_url"], "metadata_columns": [],
+           "filter": None, "page_size": 1000}
+    rows = [{"slug": "a", "name": "A", "project_url": "https://github.com/x/y"}]
+    try:
+        db_collect.build_repo_list(rows, cfg)
+        check("a config naming a missing column fails loudly", False, "no exception")
+    except db_collect.DbError:
+        check("a config naming a missing column fails loudly", True)
+
+
+def test_db_attach_metadata():
+    import tempfile
+    import json as _json
+    import db_collect
+    with tempfile.TemporaryDirectory() as base:
+        ev = os.path.join(base, "evidence")
+        os.makedirs(ev)
+        with open(os.path.join(ev, "alpha.json"), "w", encoding="utf-8") as f:
+            _json.dump({"project_slug": "alpha", "db_metadata": {}}, f)
+        selected = [{"slug": "alpha", "name": "Alpha", "repo_url": "https://github.com/acme/alpha",
+                    "repo_source_field": "contribute_in_url",
+                    "db_metadata": {"lifecycle_status": "active"}}]
+        db_collect.attach_metadata(ev, selected)
+        with open(os.path.join(ev, "alpha.json"), "r", encoding="utf-8") as f:
+            bundle = _json.load(f)
+        check("attach_metadata merges name into db_metadata",
+              bundle["db_metadata"]["name"] == "Alpha")
+        check("attach_metadata merges repo_source_field into db_metadata",
+              bundle["db_metadata"]["repo_source_field"] == "contribute_in_url")
+        check("attach_metadata preserves the original metadata columns",
+              bundle["db_metadata"]["lifecycle_status"] == "active")
+
+
+def test_db_attach_metadata_skips_missing_evidence():
+    import tempfile
+    import db_collect
+    with tempfile.TemporaryDirectory() as base:
+        ev = os.path.join(base, "evidence")
+        os.makedirs(ev)
+        selected = [{"slug": "ghost", "name": "Ghost", "repo_url": "https://github.com/acme/ghost",
+                    "repo_source_field": "project_url", "db_metadata": {}}]
+        db_collect.attach_metadata(ev, selected)  # must not raise
+        check("attach_metadata does not create a file for a project with no evidence",
+              not os.path.isfile(os.path.join(ev, "ghost.json")))
+
+
 def main():
     print("Policy and profiles")
     test_policy_loads()
@@ -380,6 +494,14 @@ def main():
     test_siblings_absent_is_visible()
     test_siblings_attach()
     test_siblings_stale_findings_not_reused_after_crash()
+
+    print("\nDB collector (optional mode, no live database)")
+    test_db_collect()
+    test_db_limit_and_pagination_warn()
+    test_db_requires_no_credentials_in_argv()
+    test_db_config_rejects_missing_column()
+    test_db_attach_metadata()
+    test_db_attach_metadata_skips_missing_evidence()
 
     passed = sum(1 for _, ok in results if ok)
     total = len(results)

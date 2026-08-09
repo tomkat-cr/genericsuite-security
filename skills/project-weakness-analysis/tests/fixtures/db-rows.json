@@ -1,0 +1,17 @@
+[
+  {"slug": "alpha", "name": "Alpha", "contribute_in_url": "https://github.com/acme/alpha",
+   "project_url": "https://alpha.example.com", "description_markdown": "Alpha does things.",
+   "lifecycle_status": "active"},
+  {"slug": "beta", "name": "Beta", "contribute_in_url": null,
+   "project_url": "https://github.com/acme/beta.git", "description_markdown": "Beta.",
+   "lifecycle_status": "active"},
+  {"slug": "gamma", "name": "Gamma", "contribute_in_url": null, "project_url": null,
+   "description_markdown": "Code at https://github.com/acme/gamma), see there.",
+   "lifecycle_status": "paused"},
+  {"slug": "delta", "name": "Delta", "contribute_in_url": null, "project_url": "https://delta.example.com",
+   "description_markdown": "No repository yet.", "lifecycle_status": "idea"},
+  {"slug": "alpha-dup", "name": "Alpha Duplicate", "contribute_in_url": "https://github.com/ACME/Alpha/",
+   "project_url": null, "description_markdown": "Same repo as alpha.", "lifecycle_status": "active"},
+  {"slug": "epsilon", "name": "Epsilon", "contribute_in_url": "https://gitlab.com/acme/epsilon",
+   "project_url": null, "description_markdown": "Not on GitHub.", "lifecycle_status": "active"}
+]
