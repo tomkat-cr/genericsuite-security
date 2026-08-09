@@ -572,6 +572,120 @@ def test_db_attach_metadata_skips_missing_evidence():
               not os.path.isfile(os.path.join(ev, "ghost.json")))
 
 
+def test_validator():
+    import _schemas
+    ok = {"type": "object", "additionalProperties": False,
+          "required": ["a"],
+          "properties": {"a": {"type": "integer", "minimum": 1, "maximum": 5},
+                         "b": {"type": "string", "enum": ["x", "y"]},
+                         "c": {"type": "array", "items": {"type": "string"}}}}
+    check("valid object passes", _schemas.validate({"a": 3}, ok) == [])
+    check("missing required field is caught", _schemas.validate({}, ok) != [])
+    check("wrong type is caught", _schemas.validate({"a": "3"}, ok) != [])
+    check("out-of-range integer is caught", _schemas.validate({"a": 9}, ok) != [])
+    check("bad enum value is caught", _schemas.validate({"a": 1, "b": "z"}, ok) != [])
+    check("unknown property is caught",
+          _schemas.validate({"a": 1, "zzz": 1}, ok) != [])
+    check("bad array item type is caught",
+          _schemas.validate({"a": 1, "c": [1]}, ok) != [])
+    check("a boolean is not an integer",
+          _schemas.validate({"a": True}, ok) != [])
+
+
+def test_schemas_shape():
+    import _schemas
+    a = _schemas.ANALYZE_SCHEMA["properties"]
+    for f in ("maturity", "production_readiness", "code_organization", "maintainability"):
+        check("analyze schema has %s.score 1-5" % f,
+              a[f]["properties"]["score"]["minimum"] == 1
+              and a[f]["properties"]["score"]["maximum"] == 5)
+    check("analyze schema has no promo fields",
+          not set(("viability", "domain_tags", "merge_potential", "diffusion",
+                   "one_line_pitch", "overall_recommendation")) & set(a))
+    s = _schemas.SECURITY_SCHEMA["properties"]
+    check("security schema enumerates finding status",
+          set(s["findings"]["items"]["properties"]["status"]["enum"])
+          == set(("open", "partial", "resolved", "new")))
+    check("security findings require file and line",
+          set(("file", "line")) <= set(s["findings"]["items"]["required"]))
+    check("security schema has a risk enum including none",
+          "none" in s["risk"]["enum"])
+
+
+def test_build_tasks():
+    import tempfile
+    import json as _json
+    import build_tasks
+    policy = _policy.load_policy()
+    with tempfile.TemporaryDirectory() as base:
+        ev = os.path.join(base, "evidence")
+        os.makedirs(ev)
+        for slug in ("alpha", "beta"):
+            with open(os.path.join(ev, slug + ".json"), "w", encoding="utf-8") as f:
+                _json.dump({"project_slug": slug, "path": "/tmp/" + slug,
+                            "remote_url": "https://github.com/acme/" + slug}, f)
+        out = os.path.join(base, "agents")
+        manifest = build_tasks.build(ev, policy, out)
+        ids = sorted(t["id"] for t in manifest["tasks"])
+        check("one analyze and one security task per project",
+              ids == ["analyze:alpha", "analyze:beta", "security:alpha", "security:beta"],
+              "got %s" % ids)
+        by_id = {t["id"]: t for t in manifest["tasks"]}
+        check("analyze uses the read-only Explore agent",
+              by_id["analyze:alpha"]["agent_type"] == "Explore")
+        check("security uses general-purpose",
+              by_id["security:alpha"]["agent_type"] == "general-purpose")
+        check("both stages use sonnet",
+              by_id["analyze:alpha"]["model"] == "sonnet"
+              and by_id["security:alpha"]["model"] == "sonnet")
+        check("every task names an output path",
+              all(t["output_path"].endswith(".json") for t in manifest["tasks"]))
+        check("every task carries its schema",
+              all("properties" in t["schema"] for t in manifest["tasks"]))
+        check("every prompt inlines the evidence path",
+              all("evidence" in t["prompt"] for t in manifest["tasks"]))
+        check("manifest states max_parallel", manifest["max_parallel"] >= 1)
+
+
+def test_build_tasks_inlines_prior_findings():
+    import tempfile
+    import json as _json
+    import build_tasks
+    policy = _policy.load_policy()
+    with tempfile.TemporaryDirectory() as base:
+        ev = os.path.join(base, "evidence")
+        os.makedirs(ev)
+        with open(os.path.join(ev, "alpha.json"), "w", encoding="utf-8") as f:
+            _json.dump({"project_slug": "alpha", "path": "/tmp/alpha"}, f)
+        prior = {"alpha": {"risk": "high", "auditedAt": "2026-01-01",
+                           "findings": [{"severity": "high", "title": "No auth on POST /items",
+                                         "status": "open"}]}}
+        m = build_tasks.build(ev, policy, os.path.join(base, "agents"), prior_audit=prior)
+        sec = [t for t in m["tasks"] if t["id"] == "security:alpha"][0]
+        check("prior findings are inlined into the security prompt",
+              "No auth on POST /items" in sec["prompt"])
+        check("the prompt forbids dropping a prior finding",
+              "resolved" in sec["prompt"] and "do not drop" in sec["prompt"].lower())
+        ana = [t for t in m["tasks"] if t["id"] == "analyze:alpha"][0]
+        check("the analyze prompt never sees security findings",
+              "No auth on POST /items" not in ana["prompt"])
+
+
+def test_build_tasks_applies_profile_instructions():
+    import tempfile
+    import json as _json
+    import build_tasks
+    policy = _policy.load_policy("genericsuite")
+    with tempfile.TemporaryDirectory() as base:
+        ev = os.path.join(base, "evidence")
+        os.makedirs(ev)
+        with open(os.path.join(ev, "alpha.json"), "w", encoding="utf-8") as f:
+            _json.dump({"project_slug": "alpha", "path": "/tmp/alpha"}, f)
+        m = build_tasks.build(ev, policy, os.path.join(base, "agents"))
+        sec = [t for t in m["tasks"] if t["id"] == "security:alpha"][0]
+        check("profile instructions reach the security prompt", "scrypt" in sec["prompt"])
+
+
 def main():
     print("Policy and profiles")
     test_policy_loads()
@@ -606,6 +720,13 @@ def main():
     test_db_config_rejects_missing_column()
     test_db_attach_metadata()
     test_db_attach_metadata_skips_missing_evidence()
+
+    print("\nSchemas and task manifest")
+    test_validator()
+    test_schemas_shape()
+    test_build_tasks()
+    test_build_tasks_inlines_prior_findings()
+    test_build_tasks_applies_profile_instructions()
 
     passed = sum(1 for _, ok in results if ok)
     total = len(results)
