@@ -1,7 +1,7 @@
 # Handoff: repo-scanner skills
 
 **Written:** 2026-08-06 · **Updated:** 2026-08-08 (phase 3 implemented — all
-three phases of the design are now complete)
+three phases of the design are now complete) · **Updated:** 2026-08-09 (`project-weakness-analysis` capstone skill added)
 **Branch:** `claude/handoff-docs-review-evioh5`
 
 This note exists so a fresh session — on web, mobile, or another machine — can
@@ -147,7 +147,7 @@ which is not enough to revisit the D6 scope defaults on.
   `supply-chain-ioc-scan` via `git mv` (byte-identical, per decision 3 below).
 
 **Next:** calibration and hardening — see "Open questions" below. No new
-skills are planned; the design's three phases are all built.
+skills are planned *within that design's scope*; the three-phase scanner design is complete. (A fourth skill, `project-weakness-analysis`, was added afterward as a separate capstone effort; see its own section below.)
 
 > Note on tooling: the phase 1 plan was asked for via the
 > `superpowers:writing-plans` skill, which was not installed in the session
