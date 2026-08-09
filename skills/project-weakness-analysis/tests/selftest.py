@@ -280,6 +280,41 @@ def test_collect_signals_writes_nothing_into_projects():
               "added: %s" % (after - before))
 
 
+def test_siblings_absent_is_visible():
+    import tempfile
+    import _siblings
+    with tempfile.TemporaryDirectory() as base:
+        corpus = os.path.join(base, "corpus.json")
+        write(corpus, '{"schema_version":1,"root":"%s","repos":[]}' % base)
+        out = _siblings.run_all(corpus, base, skill_dirs={"docker": os.path.join(base, "nope")})
+        check("a missing sibling scanner is recorded as unavailable",
+              out["docker"]["available"] is False)
+        check("a missing sibling scanner records a reason",
+              bool(out["docker"]["reason"]))
+        check("a missing sibling scanner never reports zero findings as fact",
+              out["docker"].get("by_project") == {})
+
+
+def test_siblings_attach():
+    import tempfile
+    import json as _json
+    import _siblings
+    with tempfile.TemporaryDirectory() as base:
+        ev = os.path.join(base, "evidence")
+        os.makedirs(ev)
+        with open(os.path.join(ev, "alpha.json"), "w", encoding="utf-8") as f:
+            _json.dump({"project_slug": "alpha", "siblings": {}}, f)
+        siblings = {"docker": {"available": True, "reason": "",
+                               "by_project": {"alpha": [{"priority": "P0", "ref": "nginx:latest"}]}}}
+        _siblings.attach(ev, siblings)
+        with open(os.path.join(ev, "alpha.json"), "r", encoding="utf-8") as f:
+            bundle = _json.load(f)
+        check("sibling findings are attached to the evidence bundle",
+              bundle["siblings"]["docker"]["findings"][0]["ref"] == "nginx:latest")
+        check("attach records availability per scanner",
+              bundle["siblings"]["docker"]["available"] is True)
+
+
 def main():
     print("Policy and profiles")
     test_policy_loads()
@@ -299,6 +334,10 @@ def main():
     print("\nSignals")
     test_collect_signals()
     test_collect_signals_writes_nothing_into_projects()
+
+    print("\nSibling scanners")
+    test_siblings_absent_is_visible()
+    test_siblings_attach()
 
     passed = sum(1 for _, ok in results if ok)
     total = len(results)

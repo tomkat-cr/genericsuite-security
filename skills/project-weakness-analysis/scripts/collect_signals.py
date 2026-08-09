@@ -161,6 +161,8 @@ def main(argv=None):
     ap.add_argument("--corpus", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--profile", default="generic")
+    ap.add_argument("--no-siblings", action="store_true",
+                    help="skip the sibling scanners; recorded as a blind spot")
     args = ap.parse_args(argv)
 
     try:
@@ -188,6 +190,14 @@ def main(argv=None):
             json.dump(bundle, f, indent=2)
         written += 1
     sys.stderr.write("evidence: %d written, %d skipped\n" % (written, skipped))
+
+    if not args.no_siblings:
+        import _siblings
+        res = _siblings.run_all(args.corpus, os.path.dirname(os.path.abspath(args.out)))
+        _siblings.attach(args.out, res)
+        for n, r in res.items():
+            sys.stderr.write("sibling %s: %s\n" % (n, "ok" if r["available"] else r["reason"]))
+
     return 0 if written else 2
 
 
