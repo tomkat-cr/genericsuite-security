@@ -1028,6 +1028,10 @@ def main():
     test_gate_exit_codes()
     test_driver_blocked_computation_exits_2_on_bad_insights()
 
+    print("\nDocumentation")
+    test_skill_md_and_references()
+    test_no_team_vocabulary_anywhere()
+
     passed = sum(1 for _, ok in results if ok)
     total = len(results)
     print("\n%d/%d assertions passed" % (passed, total))
@@ -1136,6 +1140,69 @@ def test_driver_blocked_computation_exits_2_on_bad_insights():
               proc.returncode == 2, "got %d, output: %s" % (proc.returncode, out))
         check("script never falls through past the failed BLOCKED= computation",
               "UNREACHABLE_BLOCKED" not in out, "output: %s" % out)
+
+
+def test_skill_md_and_references():
+    import re
+    skill_md = os.path.join(SKILL, "SKILL.md")
+    check("SKILL.md exists", os.path.isfile(skill_md))
+    with open(skill_md, "r", encoding="utf-8") as f:
+        md = f.read()
+    check("SKILL.md has YAML frontmatter", md.startswith("---\n"))
+    for field in ("name:", "description:", "license:"):
+        check("SKILL.md frontmatter has %s" % field, field in md.split("---")[1])
+    check("SKILL.md names the skill correctly",
+          re.search(r"^name:\s*project-weakness-analysis\s*$", md, re.M) is not None)
+    check("SKILL.md documents the dispatch protocol",
+          "tasks.json" in md and "output_path" in md)
+    check("SKILL.md forbids the dispatcher writing agent output itself",
+          "never write" in md.lower() or "do not write" in md.lower())
+    check("SKILL.md states that --db is optional",
+          "optional" in md.lower() and "--db" in md)
+    check("SKILL.md documents both exit-1 meanings",
+          "exit" in md.lower() and "blocked" in md.lower())
+
+    meth = os.path.join(SKILL, "references", "methodology.md")
+    check("references/methodology.md exists", os.path.isfile(meth))
+    with open(meth, "r", encoding="utf-8") as f:
+        mtext = f.read().lower()
+    for word in ("victim", "donor", "spotlight", "diffusion", "hackathon", "one-line pitch"):
+        check("methodology.md is scrubbed of %r" % word, word not in mtext)
+
+    sql = os.path.join(SKILL, "references", "project-insights.sql")
+    check("references/project-insights.sql exists", os.path.isfile(sql))
+    with open(sql, "r", encoding="utf-8") as f:
+        sqltext = f.read()
+    policy = _policy.load_policy()
+    for col in policy["table_columns"]:
+        check("DDL has a column for %s" % col, col in sqltext)
+
+
+def test_no_team_vocabulary_anywhere():
+    import re
+    bad = re.compile(r"\b(teams?|hackathon|victims?|donors?)\b", re.I)
+    offenders = []
+    # selftest.py itself is excluded: this very check's word list and regex
+    # necessarily spell out the banned terms as literals in order to detect
+    # them. It is the enforcement mechanism, not skill content - excluding it
+    # is not a weakening of the assertion, which still covers every other
+    # file (SKILL.md, references/, policy/, scripts/, and any other file
+    # under tests/, e.g. fixtures).
+    excluded = os.path.join(HERE, "selftest.py")
+    for root, dirs, files in os.walk(SKILL):
+        dirs[:] = [d for d in dirs if d not in ("__pycache__", ".git")]
+        for fn in files:
+            if not fn.endswith((".md", ".py", ".json", ".sh", ".sql")):
+                continue
+            p = os.path.join(root, fn)
+            if os.path.abspath(p) == os.path.abspath(excluded):
+                continue
+            with open(p, "r", encoding="utf-8", errors="replace") as f:
+                for i, line in enumerate(f, 1):
+                    if bad.search(line):
+                        offenders.append("%s:%d" % (os.path.relpath(p, SKILL), i))
+    check("no hackathon-era vocabulary anywhere in the skill",
+          not offenders, "found at %s" % ", ".join(offenders[:5]))
 
 
 if __name__ == "__main__":
