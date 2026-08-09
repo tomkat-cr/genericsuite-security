@@ -87,7 +87,21 @@ while [ $# -gt 0 ]; do
     --projects)
       MODE="projects"; shift
       while [ $# -gt 0 ]; do
-        case "$1" in --*) break ;; *) PROJECTS="$PROJECTS $1"; shift ;; esac
+        case "$1" in
+          --*) break ;;
+          *)
+            # Newline-joined, NOT space-joined: a project path containing a
+            # space must survive as one entry all the way to build_corpus.py.
+            # Space-joining plus later unquoted expansion is exactly the bug
+            # that made `--projects "/x/my proj"` scan an unrelated "proj"
+            # directory relative to cwd - see the sites below where PROJECTS
+            # is expanded under IFS='\n'; set -f.
+            if [ -z "$PROJECTS" ]; then PROJECTS="$1"
+            else PROJECTS="$PROJECTS
+$1"
+            fi
+            shift ;;
+        esac
       done ;;
     --out) OUT="$2"; shift 2 ;;
     --profile) PROFILE="$2"; shift 2 ;;
@@ -146,6 +160,12 @@ else
 fi
 
 if [ "$PHASE" = "collect" ]; then
+  # Persist the invocation that actually determined what gets scanned (input
+  # mode, --root/--projects/--org, --limit, etc.) so the merge phase - a
+  # SEPARATE process that only ever sees its own `--phase merge ...` argv -
+  # can show it in the report instead of just its own merge-phase call.
+  printf '%s\n' "$WEAKNESS_INVOKED_CMD" > "$WORK/scan-command.txt"
+
   echo "### Step 2: resolve input to a corpus"
   CORPUS_JSON="$WORK/corpus.json"
   # Separate from CORPUS_JSON deliberately: build_corpus.py's --out is a build
@@ -171,13 +191,26 @@ if [ "$PHASE" = "collect" ]; then
                  --stats-json "$WORK/discovery.json" $DEPTH_ARG $LIMIT_ARG $SPLIT_ARG)" || exit 2
       [ -n "$LIST_ONLY" ] && { printf '%s\n' "$FOUND"; exit 0; }
       [ -f "$BUILD" ] || { echo "repo-corpus not installed at $CORPUS_SKILL" >&2; exit 2; }
+      # $FOUND is newline-delimited (discover_projects.py prints one path per
+      # line). Expand it as multiple --local args by splitting ONLY on
+      # newline (IFS='\n') with globbing off (set -f), so a path containing a
+      # space is passed through intact instead of being word-split into
+      # fragments - see the CRITICAL bug this fixes in the final review.
+      OLD_IFS="$IFS"; IFS='
+'; set -f
       # shellcheck disable=SC2086
-      python3 "$BUILD" --local $FOUND --out "$CORPUS_BUILD_DIR" --json "$CORPUS_JSON" >/dev/null || true ;;
+      python3 "$BUILD" --local $FOUND --out "$CORPUS_BUILD_DIR" --json "$CORPUS_JSON" >/dev/null || true
+      set +f; IFS="$OLD_IFS" ;;
     projects)
-      [ -n "$LIST_ONLY" ] && { printf '%s\n' $PROJECTS; exit 0; }
+      [ -n "$LIST_ONLY" ] && { printf '%s\n' "$PROJECTS"; exit 0; }
       [ -f "$BUILD" ] || { echo "repo-corpus not installed at $CORPUS_SKILL" >&2; exit 2; }
+      # Same newline-only-split treatment as $FOUND above; PROJECTS is now
+      # newline-joined by the --projects arg parser, not space-joined.
+      OLD_IFS="$IFS"; IFS='
+'; set -f
       # shellcheck disable=SC2086
-      python3 "$BUILD" --local $PROJECTS --out "$CORPUS_BUILD_DIR" --json "$CORPUS_JSON" >/dev/null || true ;;
+      python3 "$BUILD" --local $PROJECTS --out "$CORPUS_BUILD_DIR" --json "$CORPUS_JSON" >/dev/null || true
+      set +f; IFS="$OLD_IFS" ;;
     org)
       [ -f "$BUILD" ] || { echo "repo-corpus not installed at $CORPUS_SKILL" >&2; exit 2; }
       if [ -n "$ORG" ]; then
@@ -256,10 +289,24 @@ if [ "$PHASE" = "merge" ]; then
     --out "$OUT" --profile "$PROFILE" $PRIOR_ARG $FO_ARG $FR_ARG $CORPUS_ARG $DISC_ARG || exit 2
 
   echo "### Step 6: render the report"
+  # The report is rendered here, in the merge phase - a separate process from
+  # collect. WEAKNESS_INVOKED_CMD above is only ever this process's own argv
+  # (e.g. `--phase merge --out ...`), which carries none of the input mode,
+  # --root/--projects/--org, or --limit that actually determined what was
+  # scanned. Recover that by reading the collect phase's invocation, saved to
+  # scan-command.txt, and showing both. Falls back to just this invocation
+  # when the file is absent (a `--phase merge` run with no prior `--phase
+  # collect` under the same --out, or a single-process `--phase all` run).
+  REPORT_SCAN_CMD="$WEAKNESS_INVOKED_CMD"
+  if [ -f "$WORK/scan-command.txt" ]; then
+    COLLECT_CMD="$(cat "$WORK/scan-command.txt")"
+    REPORT_SCAN_CMD="$COLLECT_CMD
+  → $WEAKNESS_INVOKED_CMD"
+  fi
   DIGEST_ARG=""; [ -f "$WORK/digest.md" ] && DIGEST_ARG="--digest $WORK/digest.md"
   # shellcheck disable=SC2086
   python3 "$SCRIPTS/gen_report.py" --insights "$OUT/insights.json" --out "$OUT" \
-    --profile "$PROFILE" --scan-command "$WEAKNESS_INVOKED_CMD" $DIGEST_ARG || exit 2
+    --profile "$PROFILE" --scan-command "$REPORT_SCAN_CMD" $DIGEST_ARG || exit 2
 
   BLOCKED="$(python3 -c "
 import json,sys

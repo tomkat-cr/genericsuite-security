@@ -156,6 +156,27 @@ def collect(project_path, slug, policy, corpus_entry=None):
     }
 
 
+def mark_siblings_skipped(evidence_dir, reason):
+    """Overwrite every evidence bundle's "siblings" with explicit
+    unavailability sentinels - the same shape _siblings.py's own _empty()
+    helper produces - so a --no-siblings run is visible as a blind spot
+    instead of looking identical to two clean sibling scans."""
+    sentinel = {"docker": {"available": False, "reason": reason, "findings": []},
+                "packages": {"available": False, "reason": reason, "findings": []}}
+    for fname in sorted(os.listdir(evidence_dir)):
+        if not fname.endswith(".json"):
+            continue
+        path = os.path.join(evidence_dir, fname)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                bundle = json.load(f)
+        except (OSError, ValueError):
+            continue
+        bundle["siblings"] = sentinel
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(bundle, f, indent=2)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Collect deterministic per-project signals.")
     ap.add_argument("--corpus", required=True)
@@ -197,6 +218,15 @@ def main(argv=None):
         _siblings.attach(args.out, res)
         for n, r in res.items():
             sys.stderr.write("sibling %s: %s\n" % (n, "ok" if r["available"] else r["reason"]))
+    else:
+        # --no-siblings must be recorded as a blind spot, not just an empty
+        # "siblings": {} bundle. merge_insights.py's blind-spot loop only
+        # fires on a sibling entry whose "available" key is False; an empty
+        # dict has no such key, so a skipped run was previously
+        # indistinguishable in the report from a run where both siblings ran
+        # and found nothing. Write the same unavailability shape _siblings.py's
+        # own _empty() helper produces, so that loop needs no changes.
+        mark_siblings_skipped(args.out, "skipped by --no-siblings")
 
     return 0 if written else 2
 

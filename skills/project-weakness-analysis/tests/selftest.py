@@ -356,6 +356,70 @@ def test_siblings_stale_findings_not_reused_after_crash():
               not os.path.exists(stale))
 
 
+def test_mark_siblings_skipped_overwrites_empty_siblings():
+    """Final-review Fix 2: --no-siblings must leave an explicit unavailability
+    sentinel behind, not the empty "siblings": {} default - an empty dict has
+    no "available" key, so merge_insights.py's blind-spot loop silently
+    ignores it and a skipped run reads identically to two clean scans."""
+    import tempfile
+    import json as _json
+    import collect_signals
+    with tempfile.TemporaryDirectory() as ev:
+        with open(os.path.join(ev, "alpha.json"), "w", encoding="utf-8") as f:
+            _json.dump({"project_slug": "alpha", "siblings": {}}, f)
+        collect_signals.mark_siblings_skipped(ev, "skipped by --no-siblings")
+        with open(os.path.join(ev, "alpha.json"), "r", encoding="utf-8") as f:
+            bundle = _json.load(f)
+        check("mark_siblings_skipped marks docker unavailable",
+              bundle["siblings"]["docker"]["available"] is False,
+              "got %s" % bundle.get("siblings"))
+        check("mark_siblings_skipped marks packages unavailable",
+              bundle["siblings"]["packages"]["available"] is False,
+              "got %s" % bundle.get("siblings"))
+        check("mark_siblings_skipped records the given reason",
+              bundle["siblings"]["docker"]["reason"] == "skipped by --no-siblings"
+              and bundle["siblings"]["packages"]["reason"] == "skipped by --no-siblings")
+        check("mark_siblings_skipped gives each sentinel an empty findings list, "
+              "matching _siblings.py's own _empty() shape",
+              bundle["siblings"]["docker"]["findings"] == []
+              and bundle["siblings"]["packages"]["findings"] == [])
+
+
+def test_collect_signals_main_no_siblings_writes_sentinels():
+    """The full path collect_signals.main() takes for --no-siblings, not just
+    the helper in isolation: a real corpus + evidence bundle end to end."""
+    import tempfile
+    import json as _json
+    import collect_signals
+    with tempfile.TemporaryDirectory() as base:
+        proj = os.path.join(base, "solo")
+        write(os.path.join(proj, "package.json"), '{"name":"solo"}')
+        corpus_path = os.path.join(base, "corpus.json")
+        with open(corpus_path, "w", encoding="utf-8") as f:
+            _json.dump({"schema_version": 1, "root": base,
+                        "repos": [{"name": "solo", "path": "solo", "status": "local"}]}, f)
+        evidence_dir = os.path.join(base, "evidence")
+        rc = collect_signals.main(["--corpus", corpus_path, "--out", evidence_dir,
+                                   "--profile", "generic", "--no-siblings"])
+        check("collect_signals.main succeeds with --no-siblings", rc == 0)
+        bundle_path = os.path.join(evidence_dir, "solo.json")
+        check("evidence bundle was written", os.path.isfile(bundle_path))
+        if not os.path.isfile(bundle_path):
+            return
+        with open(bundle_path, "r", encoding="utf-8") as f:
+            bundle = _json.load(f)
+        check("--no-siblings evidence bundle marks docker unavailable "
+              "with a --no-siblings reason (not left as an empty dict)",
+              bundle["siblings"].get("docker", {}).get("available") is False
+              and "--no-siblings" in bundle["siblings"]["docker"].get("reason", ""),
+              "got %s" % bundle.get("siblings"))
+        check("--no-siblings evidence bundle marks packages unavailable "
+              "with a --no-siblings reason",
+              bundle["siblings"].get("packages", {}).get("available") is False
+              and "--no-siblings" in bundle["siblings"]["packages"].get("reason", ""),
+              "got %s" % bundle.get("siblings"))
+
+
 def test_db_collect():
     import db_collect
     policy = _policy.load_policy()
@@ -869,6 +933,40 @@ def test_resolved_findings_do_not_raise_risk():
               [_finding("critical", "old", "resolved")], policy) == "none")
 
 
+def test_merge_no_siblings_sentinel_becomes_blind_spot():
+    """Final-review Fix 2, the other half: given the sentinel shape
+    collect_signals.mark_siblings_skipped() now writes, merge_insights.py's
+    EXISTING blind-spot loop (unchanged by this fix - it already checks
+    res.get("available", True)) must surface it. No changes to merge_insights
+    are needed for this to pass; this test is what proves that."""
+    import tempfile
+    import json as _json
+    import merge_insights
+    with tempfile.TemporaryDirectory() as base:
+        ev = os.path.join(base, "evidence")
+        ag = os.path.join(base, "agents")
+        os.makedirs(ev)
+        os.makedirs(os.path.join(ag, "out"))
+        with open(os.path.join(ev, "alpha.json"), "w", encoding="utf-8") as f:
+            _json.dump({"project_slug": "alpha", "path": "/tmp/alpha",
+                        "size": {"code_loc": 10, "primary_language": "Python"},
+                        "siblings": {
+                            "docker": {"available": False,
+                                       "reason": "skipped by --no-siblings", "findings": []},
+                            "packages": {"available": False,
+                                         "reason": "skipped by --no-siblings", "findings": []}}}, f)
+        policy = _policy.load_policy()
+        res = merge_insights.merge(ev, ag, policy)
+        check("a --no-siblings docker sentinel produces a blind spot",
+              any("docker scanner did not run" in b and "--no-siblings" in b
+                  for b in res["blind_spots"]),
+              "got %s" % res["blind_spots"])
+        check("a --no-siblings packages sentinel produces a blind spot",
+              any("packages scanner did not run" in b and "--no-siblings" in b
+                  for b in res["blind_spots"]),
+              "got %s" % res["blind_spots"])
+
+
 def test_merge_corpus_blind_spots():
     import tempfile
     import json as _json
@@ -1092,6 +1190,8 @@ def main():
     test_siblings_absent_is_visible()
     test_siblings_attach()
     test_siblings_stale_findings_not_reused_after_crash()
+    test_mark_siblings_skipped_overwrites_empty_siblings()
+    test_collect_signals_main_no_siblings_writes_sentinels()
 
     print("\nDB collector (optional mode, no live database)")
     test_db_collect()
@@ -1117,6 +1217,7 @@ def main():
     test_reaudit_carries_findings_forward()
     test_merge_record_carries_reaudit_fields()
     test_resolved_findings_do_not_raise_risk()
+    test_merge_no_siblings_sentinel_becomes_blind_spot()
     test_merge_corpus_blind_spots()
     test_merge_discovery_blind_spots()
     test_merge_main_wires_corpus_and_discovery_into_insights_json()
@@ -1132,6 +1233,11 @@ def main():
     test_driver_bash32_safe()
     test_driver_merge_phase_wires_corpus_and_discovery_flags()
     test_driver_corpus_json_defined_before_merge_phase_under_set_u()
+    test_driver_projects_arg_source_uses_newline_join_and_ifs_guard()
+    test_driver_projects_list_only_preserves_space_in_path()
+    test_driver_projects_with_space_scans_correct_directory()
+    test_driver_persists_and_recombines_scan_command_across_phases_source()
+    test_driver_report_scan_command_shows_both_phase_invocations()
     test_driver_no_input_exits_2()
     test_gate_exit_codes()
     test_driver_blocked_computation_exits_2_on_bad_insights()
@@ -1199,6 +1305,185 @@ def test_driver_corpus_json_defined_before_merge_phase_under_set_u():
           "branch, so --phase merge never reads it unset under set -u",
           work_idx < default_idx < collect_idx,
           "work=%d default=%d collect=%d" % (work_idx, default_idx, collect_idx))
+
+
+def test_driver_projects_arg_source_uses_newline_join_and_ifs_guard():
+    """Final-review Fix 1 (CRITICAL), source-level backstop: a project path
+    containing a space must never be word-split. Guards against a regression
+    reintroducing `PROJECTS="$PROJECTS $1"` (space-joined) or an unquoted
+    `--local $FOUND`/`--local $PROJECTS` expansion without the IFS='\\n';
+    set -f guard, even if the live-invocation tests below happen to pass by
+    luck (e.g. no spaces in the machine's default $TMPDIR)."""
+    path = os.path.join(SCRIPTS, "run_weakness_analysis.sh")
+    with open(path, "r", encoding="utf-8") as f:
+        src = f.read()
+    check("the --projects accumulator no longer space-joins fragments",
+          'PROJECTS="$PROJECTS $1"' not in src)
+    check("--list-only for --projects mode quotes \"$PROJECTS\" (one intact "
+          "value), not a bare unquoted expansion",
+          'printf \'%s\\n\' "$PROJECTS"' in src)
+    check("--local $FOUND and --local $PROJECTS are both preceded by an "
+          "IFS='\\n'; set -f guard (newline-only splitting, no globbing) and "
+          "restored afterwards",
+          src.count('OLD_IFS="$IFS"') == 2
+          and src.count('set +f; IFS="$OLD_IFS"') == 2,
+          'OLD_IFS= count=%d, restore count=%d'
+          % (src.count('OLD_IFS="$IFS"'), src.count('set +f; IFS="$OLD_IFS"')))
+
+
+def test_driver_projects_list_only_preserves_space_in_path():
+    """Final-review Fix 1, fast live check: --list-only for --projects mode
+    exits before touching build_corpus.py, so this exercises just the
+    arg-accumulation fix (newline join) without needing repo-corpus."""
+    import subprocess
+    import tempfile
+    path = os.path.join(SCRIPTS, "run_weakness_analysis.sh")
+    with tempfile.TemporaryDirectory() as base:
+        proj = os.path.join(base, "my project")
+        os.makedirs(proj)
+        env = dict(os.environ, WEAKNESS_SKIP_SELFTEST="1")
+        proc = subprocess.run(
+            ["bash", path, "--projects", proj, "--list-only",
+             "--out", os.path.join(base, "out")],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=60)
+        out = proc.stdout.decode("utf-8", "replace")
+        lines = [l for l in out.splitlines() if l.strip()]
+        check("--list-only with a spaced --projects path exits 0",
+              proc.returncode == 0,
+              "got %d, stderr=%s" % (proc.returncode,
+                                     proc.stderr.decode("utf-8", "replace")))
+        # stdout also carries the "### Step N: ..." progress banners printed
+        # before the --list-only short-circuit; the printf'd project list is
+        # always the last thing written before exit 0.
+        check("a project path containing a space survives as ONE entry, "
+              "not split into fragments at the space",
+              lines[-1:] == [proj], "got %r" % lines)
+
+
+def test_driver_projects_with_space_scans_correct_directory():
+    """Final-review Fix 1, full live pipeline: the reviewer's exact repro -
+    `--projects "<path with a space>"` must resolve to a corpus entry for the
+    real, intact directory and scan ITS contents, not a word-split fragment
+    (which build_corpus.py would mark status=failed for a nonexistent path,
+    or - worse, per the reviewer's report - silently resolve some unrelated
+    directory relative to cwd if a same-named fragment happened to exist)."""
+    import subprocess
+    import tempfile
+    import json as _json
+    path = os.path.join(SCRIPTS, "run_weakness_analysis.sh")
+    with tempfile.TemporaryDirectory() as base:
+        proj = os.path.join(base, "my project")
+        os.makedirs(proj)
+        write(os.path.join(proj, "package.json"), '{"name": "spaced-project"}')
+        out_dir = os.path.join(base, "out")
+        env = dict(os.environ, WEAKNESS_SKIP_SELFTEST="1")
+        proc = subprocess.run(
+            ["bash", path, "--projects", proj, "--out", out_dir,
+             "--phase", "collect", "--no-siblings"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=180)
+        out = (proc.stdout + proc.stderr).decode("utf-8", "replace")
+        check("collect phase on a spaced --projects path exits 0",
+              proc.returncode == 0, "got %d: %s" % (proc.returncode, out[-2000:]))
+
+        corpus_path = os.path.join(out_dir, ".work", "corpus.json")
+        check("corpus.json was produced", os.path.isfile(corpus_path))
+        if not os.path.isfile(corpus_path):
+            return
+        with open(corpus_path, "r", encoding="utf-8") as f:
+            corpus = _json.load(f)
+        repos = corpus.get("repos", [])
+        check("exactly one project was resolved from a spaced --projects path "
+              "(a word-split bug would produce two fragment entries instead)",
+              len(repos) == 1, "got %r" % repos)
+        if repos:
+            check("the resolved project's name is the intact directory name",
+                  repos[0].get("name") == "my project", "got %r" % repos[0].get("name"))
+            check("the resolved project was not marked failed",
+                  repos[0].get("status") != "failed", "got %r" % repos[0])
+
+        evidence_path = os.path.join(out_dir, ".work", "evidence", "my project.json")
+        check("the evidence bundle for the correctly-named project was written",
+              os.path.isfile(evidence_path))
+        if os.path.isfile(evidence_path):
+            with open(evidence_path, "r", encoding="utf-8") as f:
+                bundle = _json.load(f)
+            check("the evidence bundle actually scanned the fixture directory "
+                  "(sees its package.json) - proves the right tree was read, "
+                  "not an empty or unrelated one",
+                  "package.json" in (bundle.get("structure", {}).get("top_level") or []),
+                  "got %r" % bundle.get("structure"))
+
+
+def test_driver_persists_and_recombines_scan_command_across_phases_source():
+    """Final-review Fix 3, source-level backstop."""
+    path = os.path.join(SCRIPTS, "run_weakness_analysis.sh")
+    with open(path, "r", encoding="utf-8") as f:
+        src = f.read()
+    check("collect phase persists WEAKNESS_INVOKED_CMD to scan-command.txt",
+          '"$WEAKNESS_INVOKED_CMD" > "$WORK/scan-command.txt"' in src)
+    check("merge phase reads scan-command.txt back",
+          '$WORK/scan-command.txt' in src.split('if [ "$PHASE" = "merge" ]')[1])
+    check("merge phase falls back to its own invocation when no persisted "
+          "collect-phase command exists",
+          'REPORT_SCAN_CMD="$WEAKNESS_INVOKED_CMD"' in src)
+    check("gen_report.py is invoked with the recombined command, not the "
+          "raw merge-phase-only WEAKNESS_INVOKED_CMD",
+          '--scan-command "$REPORT_SCAN_CMD"' in src)
+
+
+def test_driver_report_scan_command_shows_both_phase_invocations():
+    """Final-review Fix 3, full live pipeline across two SEPARATE processes
+    (collect, then merge - exactly how this driver is actually used), proving
+    the report's Scan command section is not just the merge-phase argv."""
+    import subprocess
+    import tempfile
+    path = os.path.join(SCRIPTS, "run_weakness_analysis.sh")
+    with tempfile.TemporaryDirectory() as base:
+        proj = os.path.join(base, "app")
+        os.makedirs(proj)
+        write(os.path.join(proj, "package.json"), '{"name":"app"}')
+        out_dir = os.path.join(base, "out")
+        env = dict(os.environ, WEAKNESS_SKIP_SELFTEST="1")
+
+        collect = subprocess.run(
+            ["bash", path, "--projects", proj, "--out", out_dir,
+             "--phase", "collect", "--no-siblings"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=180)
+        check("collect phase (separate process) exits 0",
+              collect.returncode == 0,
+              "got %d: %s" % (collect.returncode,
+                              (collect.stdout + collect.stderr).decode("utf-8", "replace")[-1500:]))
+
+        merge = subprocess.run(
+            ["bash", path, "--phase", "merge", "--out", out_dir,
+             "--fail-on", "none", "--fail-on-readiness", "none"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=180)
+        check("merge phase (a separate process, different argv) does not error",
+              merge.returncode in (0, 1),
+              "got %d: %s" % (merge.returncode,
+                              (merge.stdout + merge.stderr).decode("utf-8", "replace")[-1500:]))
+
+        report_path = os.path.join(out_dir, "WEAKNESS-REPORT.md")
+        check("WEAKNESS-REPORT.md was produced", os.path.isfile(report_path))
+        if not os.path.isfile(report_path):
+            return
+        with open(report_path, "r", encoding="utf-8") as f:
+            report = f.read()
+        section = report.split("## 2. Scan command")[1].split("## 3.")[0]
+        check("report's Scan command section shows the ORIGINAL collect-phase "
+              "invocation (--projects, the scanned path)",
+              "--projects" in section and "app" in section,
+              "section: %r" % section)
+        # Each arg is individually shell-quoted by WEAKNESS_INVOKED_CMD's
+        # capture loop (e.g. "'--phase' 'merge'"), so look for the quoted
+        # 'merge' token rather than an unquoted "--phase merge" substring.
+        check("report's Scan command section ALSO shows the merge-phase "
+              "invocation, not just the collect one",
+              "'merge'" in section and "'--fail-on'" in section,
+              "section: %r" % section)
+        check("the two invocations are visibly combined (arrow separator), "
+              "not just one overwriting the other",
+              "→" in section, "section: %r" % section)
 
 
 def test_driver_no_input_exits_2():
