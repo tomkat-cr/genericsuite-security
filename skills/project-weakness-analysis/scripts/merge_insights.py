@@ -181,6 +181,9 @@ def merge(evidence_dir, agents_dir, policy, prior_audit=None):
             "readiness_reason": reason,
             "security_risk": security_risk,
             "findings": findings,
+            "previous_risk": (prior or {}).get("risk"),
+            "audited_at": (prior or {}).get("auditedAt") or _today(),
+            "reaudited_at": _today() if prior else None,
             # Baseline blocking state: an unknown verdict on either axis is
             # blocking per rule 1, independent of any gate policy. main()'s
             # apply_gate() overwrites this with the configured thresholds

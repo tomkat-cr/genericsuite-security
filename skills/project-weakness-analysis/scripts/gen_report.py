@@ -189,6 +189,7 @@ def render_markdown(insights, policy, scan_command, digest=None):
         A("")
         A("- **Readiness:** `%s` — %s" % (p["readiness"], p.get("readiness_reason", "")))
         A("- **Security risk:** `%s`" % p["security_risk"])
+        A("- **Blocked:** `%s`" % p.get("blocked", False))
         if a:
             A("- **Summary:** %s" % a.get("summary", ""))
             A("- **Scores:** production-readiness %s/5 · maturity %s/5 · "

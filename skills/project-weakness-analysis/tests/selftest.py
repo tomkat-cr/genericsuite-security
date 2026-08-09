@@ -836,6 +836,28 @@ def test_reaudit_carries_findings_forward():
         check("reauditedAt is stamped", bool(res["audit"]["a"].get("reauditedAt")))
 
 
+def test_merge_record_carries_reaudit_fields():
+    import tempfile
+    import merge_insights
+    policy = _policy.load_policy()
+    prior = {"a": {"risk": "high", "auditedAt": "2026-01-01",
+                   "findings": [{"severity": "high", "title": "F1", "status": "open"}]}}
+    with tempfile.TemporaryDirectory() as base:
+        # Same re-audit shape as test_reaudit_carries_findings_forward, but this
+        # asserts the project RECORD (insights.json / flat_rows source), not
+        # just res["audit"] (security-audit.json).
+        ev, ag = _merge_fixture(base, {"a": _valid_analysis()},
+            {"a": _valid_security("none", [_finding("high", "F1", "resolved")])})
+        res = merge_insights.merge(ev, ag, policy, prior_audit=prior)
+        p = res["projects"][0]
+        check("project record carries previous_risk from the prior audit",
+              p.get("previous_risk") == "high", "got %s" % p.get("previous_risk"))
+        check("project record carries audited_at from the prior audit",
+              p.get("audited_at") == "2026-01-01", "got %s" % p.get("audited_at"))
+        check("project record stamps reaudited_at on a re-audit",
+              bool(p.get("reaudited_at")))
+
+
 def test_resolved_findings_do_not_raise_risk():
     import merge_insights
     policy = _policy.load_policy()
@@ -882,6 +904,11 @@ def test_report_generation():
     check("report always has a blind-spot section", "Blind spots" in md)
     check("report carries the blind spot through", "analyze output unusable" in md)
     check("report has a project matrix", "Project matrix" in md)
+    check("per-project detail shows a Blocked indicator", "**Blocked:**" in md)
+    alpha_section = md.split("### alpha")[1].split("### beta")[0]
+    check("Blocked indicator appears for a project with analysis present, "
+          "not just the analysis-missing branch",
+          "**Blocked:**" in alpha_section)
 
     for rule in policy["readiness_rules"]:
         check("legend line for %s comes from policy" % rule["tier"],
@@ -986,6 +1013,7 @@ def main():
     test_missing_and_invalid_agent_output()
     test_missing_security_output_is_unknown_risk()
     test_reaudit_carries_findings_forward()
+    test_merge_record_carries_reaudit_fields()
     test_resolved_findings_do_not_raise_risk()
 
     print("\nReport, projection, CSV and SARIF")
