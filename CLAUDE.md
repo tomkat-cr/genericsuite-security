@@ -78,10 +78,10 @@ Exit codes here are `0` complete corpus, `1` **partial** corpus (some repos fail
 Analyze many projects for production readiness and security weaknesses (from `skills/project-weakness-analysis/`):
 ```bash
 ./scripts/run_weakness_analysis.sh --root ~/projects          # scan a local directory tree
-./scripts/run_weakness_analysis.sh --projects a.json          # scan an explicit list
+./scripts/run_weakness_analysis.sh --projects ~/dev/app1 ~/dev/app2  # scan an explicit list of directories
 ./scripts/run_weakness_analysis.sh --corpus corpus.json       # scan an existing corpus
 ./scripts/run_weakness_analysis.sh --org myorg                # scan a GitHub org or user
-./scripts/run_weakness_analysis.sh --db postgresql://...      # scan projects from a database
+SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... ./scripts/run_weakness_analysis.sh --db  # scan projects from database (env vars only, never a flag)
 ./scripts/run_weakness_analysis.sh --phase merge              # merge agent outputs without re-scanning
 python3 tests/selftest.py
 ```
