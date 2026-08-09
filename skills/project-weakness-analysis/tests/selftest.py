@@ -686,6 +686,167 @@ def test_build_tasks_applies_profile_instructions():
         check("profile instructions reach the security prompt", "scrypt" in sec["prompt"])
 
 
+def _valid_analysis(pr=4, mat=4, org=4, boiler="real"):
+    return {"summary": "s", "project_type": "web app",
+            "stack": {"frontend": [], "backend": [], "database": [],
+                      "infra_deploy": [], "languages": ["Python"]},
+            "architecture": {"pattern": "mvc", "uses_orm": True,
+                             "orm_or_db_layer": "sqlalchemy", "api_design": "rest",
+                             "separation_of_concerns": "good"},
+            "code_organization": {"score": org, "reasoning": "r",
+                                  "directory_structure": "d", "naming_quality": "n",
+                                  "documentation_quality": "q"},
+            "production_readiness": {"score": pr, "reasoning": "r", "has_auth": True,
+                                     "has_error_handling": True, "has_logging": True,
+                                     "has_env_config": True, "has_deploy_config": True,
+                                     "secrets_handling": "env"},
+            "maturity": {"score": mat, "reasoning": "r", "has_readme": True,
+                         "has_tests": True, "has_ci": True,
+                         "is_real_or_boilerplate": boiler},
+            "maintainability": {"score": 4, "reasoning": "r"},
+            "weaknesses": [], "red_flags": []}
+
+
+def _valid_security(risk="none", findings=None):
+    return {"risk": risk, "findings": findings or [], "issueState": "none",
+            "issueUrl": None, "reauditNote": "n"}
+
+
+def _finding(sev, title, status):
+    return {"severity": sev, "title": title, "status": status, "file": "a.py",
+            "line": 1, "evidence": "e", "remediation": "r"}
+
+
+def _merge_fixture(base, analyses, securities):
+    import json as _json
+    ev = os.path.join(base, "evidence")
+    ag = os.path.join(base, "agents", "out")
+    os.makedirs(ev)
+    os.makedirs(ag)
+    for slug in set(list(analyses) + list(securities)):
+        with open(os.path.join(ev, slug + ".json"), "w", encoding="utf-8") as f:
+            _json.dump({"project_slug": slug, "path": "/tmp/" + slug,
+                        "size": {"code_loc": 100, "primary_language": "Python"},
+                        "siblings": {}}, f)
+    for slug, obj in analyses.items():
+        if obj is None:
+            continue
+        with open(os.path.join(ag, slug + ".analyze.json"), "w", encoding="utf-8") as f:
+            _json.dump(obj, f)
+    for slug, obj in securities.items():
+        if obj is None:
+            continue
+        with open(os.path.join(ag, slug + ".security.json"), "w", encoding="utf-8") as f:
+            _json.dump(obj, f)
+    return ev, os.path.join(base, "agents")
+
+
+def test_verdict_derivation():
+    import tempfile
+    import merge_insights
+    policy = _policy.load_policy()
+    with tempfile.TemporaryDirectory() as base:
+        ev, ag = _merge_fixture(base,
+            {"ready": _valid_analysis(4, 4, 4),
+             "work": _valid_analysis(3, 3, 3),
+             "notready": _valid_analysis(1, 1, 1, boiler="boilerplate"),
+             "risky": _valid_analysis(5, 5, 5)},
+            {"ready": _valid_security("none"),
+             "work": _valid_security("medium", [_finding("medium", "m", "open")]),
+             "notready": _valid_security("none"),
+             "risky": _valid_security("critical", [_finding("critical", "c", "open")])})
+        res = merge_insights.merge(ev, ag, policy)
+        by = {p["project_slug"]: p for p in res["projects"]}
+        check("high scores with no findings are production-ready",
+              by["ready"]["readiness"] == "production-ready")
+        check("middling scores are needs-work", by["work"]["readiness"] == "needs-work")
+        check("skeleton scores are not-ready", by["notready"]["readiness"] == "not-ready")
+        check("a critical open finding disqualifies production-ready",
+              by["risky"]["readiness"] != "production-ready",
+              "got %s" % by["risky"]["readiness"])
+        check("security_risk reflects the worst open finding",
+              by["risky"]["security_risk"] == "critical")
+        check("no findings means risk none", by["ready"]["security_risk"] == "none")
+
+
+def test_missing_and_invalid_agent_output():
+    import tempfile
+    import merge_insights
+    policy = _policy.load_policy()
+    with tempfile.TemporaryDirectory() as base:
+        ev, ag = _merge_fixture(base,
+            {"missing": None, "bad": {"summary": "only this key"},
+             "good": _valid_analysis()},
+            {"missing": _valid_security(), "bad": _valid_security(),
+             "good": _valid_security()})
+        res = merge_insights.merge(ev, ag, policy)
+        by = {p["project_slug"]: p for p in res["projects"]}
+        check("missing analyze output yields unknown", by["missing"]["readiness"] == "unknown")
+        check("invalid analyze output yields unknown", by["bad"]["readiness"] == "unknown")
+        check("a project with no agent output is still present, not dropped",
+              set(("missing", "bad", "good")) <= set(by))
+        check("missing output appears in blind spots",
+              any("missing" in b for b in res["blind_spots"]))
+        check("invalid output appears in blind spots",
+              any("bad" in b for b in res["blind_spots"]))
+        rejected = os.path.join(base, "agents", "rejected", "bad.analyze.json")
+        check("rejected agent output is preserved for inspection",
+              os.path.isfile(rejected))
+
+
+def test_missing_security_output_is_unknown_risk():
+    import tempfile
+    import merge_insights
+    policy = _policy.load_policy()
+    with tempfile.TemporaryDirectory() as base:
+        ev, ag = _merge_fixture(base, {"a": _valid_analysis()}, {"a": None})
+        res = merge_insights.merge(ev, ag, policy)
+        p = res["projects"][0]
+        check("missing security output does not silently mean risk none",
+              p["security_risk"] != "none", "got %s" % p["security_risk"])
+        check("missing security output blocks the project", p["blocked"] is True)
+
+
+def test_reaudit_carries_findings_forward():
+    import tempfile
+    import merge_insights
+    policy = _policy.load_policy()
+    prior = {"a": {"risk": "high", "auditedAt": "2026-01-01",
+                   "findings": [{"severity": "high", "title": "F1", "status": "open"},
+                                {"severity": "low", "title": "F2", "status": "open"}]}}
+    with tempfile.TemporaryDirectory() as base:
+        # The agent resolves F1 and forgets F2 entirely.
+        ev, ag = _merge_fixture(base, {"a": _valid_analysis()},
+            {"a": _valid_security("none", [_finding("high", "F1", "resolved")])})
+        res = merge_insights.merge(ev, ag, policy, prior_audit=prior)
+        titles = {f["title"]: f for f in res["audit"]["a"]["findings"]}
+        check("a resolved prior finding is kept, not dropped",
+              titles["F1"]["status"] == "resolved")
+        check("a prior finding the agent omitted is re-added",
+              "F2" in titles, "got %s" % sorted(titles))
+        check("a re-added finding stays open, never assumed fixed",
+              titles.get("F2", {}).get("status") == "open")
+        check("dropping a prior finding is recorded as a blind spot",
+              any("F2" in b for b in res["blind_spots"]))
+        check("risk reflects the still-open F2, not the resolved F1",
+              res["audit"]["a"]["risk"] == "low",
+              "got %s" % res["audit"]["a"]["risk"])
+        check("previousRisk is stamped", res["audit"]["a"]["previousRisk"] == "high")
+        check("auditedAt is carried forward", res["audit"]["a"]["auditedAt"] == "2026-01-01")
+        check("reauditedAt is stamped", bool(res["audit"]["a"].get("reauditedAt")))
+
+
+def test_resolved_findings_do_not_raise_risk():
+    import merge_insights
+    policy = _policy.load_policy()
+    findings = [_finding("critical", "old", "resolved"), _finding("low", "new", "open")]
+    check("resolved findings never contribute to risk",
+          merge_insights.worst_open_severity(findings, policy) == "low")
+    check("all-resolved means risk none",
+          merge_insights.worst_open_severity(
+              [_finding("critical", "old", "resolved")], policy) == "none")
+
+
 def main():
     print("Policy and profiles")
     test_policy_loads()
@@ -727,6 +888,13 @@ def main():
     test_build_tasks()
     test_build_tasks_inlines_prior_findings()
     test_build_tasks_applies_profile_instructions()
+
+    print("\nMerge, verdicts and re-audit")
+    test_verdict_derivation()
+    test_missing_and_invalid_agent_output()
+    test_missing_security_output_is_unknown_risk()
+    test_reaudit_carries_findings_forward()
+    test_resolved_findings_do_not_raise_risk()
 
     passed = sum(1 for _, ok in results if ok)
     total = len(results)
