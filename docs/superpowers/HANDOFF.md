@@ -208,15 +208,24 @@ a registry image before assuming the resolver is broken.
 
 ## Project-weakness-analysis: production readiness and security synthesis
 
-Built as a capstone after the three scanner phases, `project-weakness-analysis` synthesizes signals and findings from the repository scanners plus project-specific deterministic passes (commitlog, lockfiles, secrets, test coverage) into two independent verdict axes: a readiness tier (production-ready / needs-work / not-ready / unknown) and a security risk level (critical … none). Both gates block deployment — unknown readiness or critical risk each prevent release.
+Built as a capstone after the three scanner phases, `project-weakness-analysis` synthesizes signals and findings from the repository scanners plus project-specific deterministic passes (manifests, lockfiles, secrets, test/CI presence) into two independent verdict axes: a readiness tier (production-ready / needs-work / not-ready / unknown) and a security risk level (critical … none). Both gates block deployment — unknown readiness or critical risk each prevent release.
 
-- **266 assertions passing**, covering discovery modes, evidence collection, agent task manifests, schema validation, gate logic, re-audit loops (dropping and re-adding findings across runs), output shapes (markdown, JSON, flat projections, SARIF), and bash driver safety.
+- **298 assertions passing**, covering discovery modes, evidence collection, agent task manifests, schema validation, gate logic, re-audit loops (dropping and re-adding findings across runs), output shapes (markdown, JSON, flat projections, SARIF), and bash driver safety.
 - **Five input modes**: filesystem root, explicit project list, existing corpus, GitHub org/user, and optional read-only database (Supabase PostgREST or psql).
 - **Deterministic pre-pass** grounds two sonnet agents per project (readiness and security analysis); a haiku agent writes the cross-project rollup.
 - **Re-audit loop**: a second run verifies every prior finding as resolved/partial/open; no finding is ever dropped.
 - **`--db` mode is unverified against live Supabase or psql** — the self-test uses a saved query payload. `--org`, `--user`, `--root`, and `--projects` modes are fully tested.
 - **Readiness thresholds have zero calibration runs against real projects** — the `readiness_rules` table in `policy/weakness.json` is defensible in the abstract but untested on real data. A real run will almost certainly reveal tier-boundary mismatches: projects clustering in one tier means the gate is wrong. Retuning is a `policy/weakness.json` edit, never a code change. The brief's Step 7 (explicitly deferred as "requires a human decision") is the calibration run — read the tier histogram, retune, and report back before treating `--fail-on` as a CI gate.
 - **Output under `./insights/`**: `WEAKNESS-REPORT.md`, `insights.json`, `insights-table.json`/`.csv`, `security-audit.json`, per-project JSON files, and `findings.sarif`.
+
+**Known gaps, deliberately shipped as follow-ups** — a whole-branch review (opus, live end-to-end execution) found and fixed one Critical bug (unquoted path expansion in the driver could silently scan an unnamed directory instead of the one the operator specified) plus two Important bugs in the same "wrong-looking-right" class (`--no-siblings` not recorded as a blind spot; the report's scan-command section showing only the merge-phase invocation). Those are fixed. Four further Important findings were explicitly triaged as safe to land as tracked follow-ups rather than blockers:
+
+- `_secrets.py` only scans git-tracked files. A non-git project under `--root`/`--projects` reports `secrets: []` indistinguishable from "scanned, clean" — the detector silently didn't run. `--org`/`--corpus` modes always operate on clones so this is invisible there.
+- Five of the thirty flat-projection columns (`stars`, `forks`, `contributors`, `commit_count`, `license`) are permanently null. `stars`/`license` are readily derivable from data `collect_signals.py` already has (`corpus_entry`'s stargazer count; `quality.has_license`) and would be the cheapest to close first.
+- Passing two input modes at once (e.g. `--root X --corpus Y`) silently picks one instead of exiting `2`, as the spec requires. No artifact currently shows which mode won (partially mitigated now that the scan-command fix makes the actual invocation visible in the report).
+- Deterministic evidence (CONFIRMED secret findings, sibling-scanner finding counts) reaches `insights.json`/`projects/<slug>.json` correctly but not `WEAKNESS-REPORT.md` or `findings.sarif` — it only appears in the human-readable deliverable if the security agent chooses to mention it. This undercuts the "findings a machine can prove are never left to an LLM's judgment" principle at the deliverable layer, even though the record layer is correct.
+
+Also: `discover_projects.py`'s `unreadable`/`pruned` walk stats never reach the report's blind spots (only `truncated` does); a re-audited finding the agent omits is correctly re-added but loses its file/line locator; `datetime.utcnow()` deprecation warnings now visibly fire on stderr during normal runs.
 
 ## What phase 1 built (the interface phase 2 consumes)
 

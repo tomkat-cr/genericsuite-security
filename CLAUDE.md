@@ -16,7 +16,7 @@ The plugin currently ships five skills:
 
 ## Work In Progress
 
-All three planned scanner phases are implemented: `repo-corpus` (phase 1), `repo-docker-scanner` (phase 2), `repo-packages-scanner` (phase 3). The `project-weakness-analysis` skill is complete with 266 passing assertions but has had no calibration run against real projects yet.
+All three planned scanner phases are implemented: `repo-corpus` (phase 1), `repo-docker-scanner` (phase 2), `repo-packages-scanner` (phase 3). The `project-weakness-analysis` skill is complete with 298 passing assertions but has had no calibration run against real projects yet.
 
 **If you are picking this work up, read `docs/superpowers/HANDOFF.md` first** — it names the next concrete step, the decisions already made, and the open questions. The approved design is `docs/superpowers/specs/2026-08-06-repo-scanner-skills-design.md`.
 
