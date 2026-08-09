@@ -847,6 +847,98 @@ def test_resolved_findings_do_not_raise_risk():
               [_finding("critical", "old", "resolved")], policy) == "none")
 
 
+def _insights_fixture():
+    return {"schema_version": 1, "generated_at": "2026-08-08", "profile": "generic",
+            "blind_spots": ["beta: analyze output unusable - no output file"],
+            "projects": [
+                {"project_slug": "alpha", "name": "Alpha", "path": "/tmp/alpha",
+                 "branch": "main", "head_sha": "abc123", "repo_url": "https://github.com/acme/alpha",
+                 "repo_source_field": None, "signals": {"code_loc": 900, "primary_language": "Python"},
+                 "db_metadata": {}, "siblings": {}, "walk_stats": {}, "secrets": [],
+                 "analysis": _valid_analysis(), "readiness": "production-ready",
+                 "readiness_reason": "r", "security_risk": "low", "blocked": False,
+                 "findings": [_finding("low", "Verbose errors", "open")]},
+                {"project_slug": "beta", "name": "Beta", "path": "/tmp/beta",
+                 "branch": "main", "head_sha": "def456", "repo_url": None,
+                 "repo_source_field": None, "signals": {}, "db_metadata": {},
+                 "siblings": {}, "walk_stats": {}, "secrets": [], "analysis": None,
+                 "readiness": "unknown", "readiness_reason": "u",
+                 "security_risk": "unknown", "blocked": True, "findings": []}]}
+
+
+def test_report_generation():
+    import tempfile
+    import gen_report
+    policy = _policy.load_policy()
+    ins = _insights_fixture()
+    md = gen_report.render_markdown(ins, policy,
+                                    "./run.sh --db --db-url postgres://u:pw@h/d")
+
+    check("report states the scan command", "Scan command" in md)
+    check("the scan command is redacted in the report", "pw@h" not in md)
+    check("report names every project analyzed",
+          "alpha" in md and "beta" in md)
+    check("report states head SHAs", "abc123" in md and "def456" in md)
+    check("report always has a blind-spot section", "Blind spots" in md)
+    check("report carries the blind spot through", "analyze output unusable" in md)
+    check("report has a project matrix", "Project matrix" in md)
+
+    for rule in policy["readiness_rules"]:
+        check("legend line for %s comes from policy" % rule["tier"],
+              rule["reason"][:40] in md, "missing: %s" % rule["reason"][:40])
+    for word in ("P0", "P1", "P2", "spotlight", "diffusion", "promote"):
+        check("report contains no %r vocabulary from another scanner" % word,
+              word not in md)
+
+
+def test_flat_projection():
+    import gen_report
+    policy = _policy.load_policy()
+    rows = gen_report.flat_rows(_insights_fixture(), policy)
+    check("one row per project, including unscored ones", len(rows) == 2)
+    check("row columns match table_columns exactly and in order",
+          all(list(r.keys()) == policy["table_columns"] for r in rows))
+    by = {r["project_slug"]: r for r in rows}
+    check("an unknown project still has a row", "beta" in by)
+    check("an unknown project is marked blocked", by["beta"]["blocked"] is True)
+    check("unscored fields are null, not zero", by["beta"]["maturity_score"] is None)
+    check("scores are carried from the analysis", by["alpha"]["maturity_score"] == 4)
+    check("open findings are counted", by["alpha"]["open_findings"] == 1)
+
+
+def test_csv_and_sarif():
+    import tempfile
+    import csv as _csv
+    import json as _json
+    import gen_report
+    policy = _policy.load_policy()
+    ins = _insights_fixture()
+    with tempfile.TemporaryDirectory() as out:
+        gen_report.write_all(ins, policy, out, "./run.sh --root .", digest=None)
+        with open(os.path.join(out, "insights-table.csv"), "r", encoding="utf-8") as f:
+            rows = list(_csv.DictReader(f))
+        check("CSV has one row per project", len(rows) == 2)
+        check("CSV header matches table_columns",
+              list(rows[0].keys()) == policy["table_columns"])
+        with open(os.path.join(out, "findings.sarif"), "r", encoding="utf-8") as f:
+            sarif = _json.load(f)
+        check("SARIF has the required version", sarif["version"] == "2.1.0")
+        check("SARIF carries one result per finding",
+              len(sarif["runs"][0]["results"]) == 1)
+        check("report, table json, table csv and sarif all written",
+              all(os.path.isfile(os.path.join(out, n)) for n in
+                  ("WEAKNESS-REPORT.md", "insights-table.json",
+                   "insights-table.csv", "findings.sarif")))
+
+
+def test_report_without_digest_says_so():
+    import gen_report
+    policy = _policy.load_policy()
+    md = gen_report.render_markdown(_insights_fixture(), policy, "./run.sh", digest=None)
+    check("a missing rollup is stated, not silently omitted",
+          "rollup" in md.lower())
+
+
 def main():
     print("Policy and profiles")
     test_policy_loads()
@@ -895,6 +987,12 @@ def main():
     test_missing_security_output_is_unknown_risk()
     test_reaudit_carries_findings_forward()
     test_resolved_findings_do_not_raise_risk()
+
+    print("\nReport, projection, CSV and SARIF")
+    test_report_generation()
+    test_flat_projection()
+    test_csv_and_sarif()
+    test_report_without_digest_says_so()
 
     passed = sum(1 for _, ok in results if ok)
     total = len(results)
