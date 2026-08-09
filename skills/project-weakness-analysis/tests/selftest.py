@@ -212,6 +212,74 @@ def test_secrets_untracked_env_is_not_confirmed():
               not any(x["tier"] == "CONFIRMED" for x in f))
 
 
+def build_signals_fixtures(base):
+    """Three projects: production-grade, boilerplate skeleton, leaky."""
+    good = os.path.join(base, "good")
+    write(os.path.join(good, "package.json"),
+          '{"name":"good","dependencies":{"express":"4.18.2"}}')
+    write(os.path.join(good, "package-lock.json"), '{"lockfileVersion":3}')
+    write(os.path.join(good, "README.md"), "# good\n" + ("detail\n" * 40))
+    write(os.path.join(good, "LICENSE"), "MIT\n")
+    write(os.path.join(good, ".gitignore"), ".env\n")
+    write(os.path.join(good, "Dockerfile"), "FROM node:20-alpine\n")
+    write(os.path.join(good, ".github", "workflows", "ci.yml"), "on: push\n")
+    write(os.path.join(good, "tests", "app.test.js"), "test('x', () => {});\n")
+    write(os.path.join(good, "src", "app.js"), "const e = require('express');\n" * 20)
+    write(os.path.join(good, ".env.example"), "PORT=3000\n")
+
+    skel = os.path.join(base, "skeleton")
+    write(os.path.join(skel, "package.json"), '{"name":"skeleton"}')
+    write(os.path.join(skel, "README.md"), "# skeleton\n")
+
+    return good, skel
+
+
+def test_collect_signals():
+    import tempfile
+    import collect_signals
+    policy = _policy.load_policy()
+    with tempfile.TemporaryDirectory() as base:
+        good, skel = build_signals_fixtures(base)
+
+        g = collect_signals.collect(good, "good", policy, corpus_entry=None)
+        check("detects a committed lockfile", g["manifests"]["lockfiles"] == ["package-lock.json"],
+              "got %s" % g["manifests"]["lockfiles"])
+        check("detects tests", g["quality"]["has_tests"] is True)
+        check("detects CI", g["quality"]["has_ci"] is True)
+        check("detects a Dockerfile", g["deploy"]["has_dockerfile"] is True)
+        check("detects a README with real length", g["quality"]["readme_bytes"] > 100)
+        check("detects LICENSE", g["quality"]["has_license"] is True)
+        check("counts lines of code", g["size"]["code_loc"] > 0)
+        check("records .env.example", g["config_hygiene"]["has_env_example"] is True)
+        check("siblings starts empty", g["siblings"] == {})
+        check("walk_stats is carried", "unreadable" in g["walk_stats"])
+
+        s = collect_signals.collect(skel, "skeleton", policy, corpus_entry=None)
+        check("skeleton has no tests", s["quality"]["has_tests"] is False)
+        check("skeleton has no CI", s["quality"]["has_ci"] is False)
+        check("skeleton has no lockfile", s["manifests"]["lockfiles"] == [])
+        check("skeleton has no Dockerfile", s["deploy"]["has_dockerfile"] is False)
+
+
+def test_collect_signals_writes_nothing_into_projects():
+    import tempfile
+    import collect_signals
+    policy = _policy.load_policy()
+    with tempfile.TemporaryDirectory() as base:
+        good, _ = build_signals_fixtures(base)
+        before = set()
+        for r, d, fs in os.walk(good):
+            for x in fs:
+                before.add(os.path.join(r, x))
+        collect_signals.collect(good, "good", policy, corpus_entry=None)
+        after = set()
+        for r, d, fs in os.walk(good):
+            for x in fs:
+                after.add(os.path.join(r, x))
+        check("collecting writes nothing inside a scanned project", before == after,
+              "added: %s" % (after - before))
+
+
 def main():
     print("Policy and profiles")
     test_policy_loads()
@@ -227,6 +295,10 @@ def main():
     print("\nSecrets")
     test_secrets()
     test_secrets_untracked_env_is_not_confirmed()
+
+    print("\nSignals")
+    test_collect_signals()
+    test_collect_signals_writes_nothing_into_projects()
 
     passed = sum(1 for _, ok in results if ok)
     total = len(results)
