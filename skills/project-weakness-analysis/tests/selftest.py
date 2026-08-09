@@ -1022,6 +1022,11 @@ def main():
     test_csv_and_sarif()
     test_report_without_digest_says_so()
 
+    print("\nDriver and gate")
+    test_driver_bash32_safe()
+    test_driver_no_input_exits_2()
+    test_gate_exit_codes()
+
     passed = sum(1 for _, ok in results if ok)
     total = len(results)
     print("\n%d/%d assertions passed" % (passed, total))
@@ -1032,6 +1037,61 @@ def main():
         return 1
     print("\n%sAll assertions passed.%s" % (GREEN, RESET))
     return 0
+
+
+def test_driver_bash32_safe():
+    path = os.path.join(SCRIPTS, "run_weakness_analysis.sh")
+    with open(path, "r", encoding="utf-8") as f:
+        src = f.read()
+    for bad, why in (("declare -A", "associative arrays need bash 4"),
+                     ("mapfile", "needs bash 4"),
+                     ("readarray", "needs bash 4"),
+                     ("${!", "indirect expansion is bash 4 in this form")):
+        check("driver avoids %s (%s)" % (bad, why), bad not in src)
+    check("driver does not use set -e (it masks pipeline stage failures)",
+          "set -e" not in src.replace("set -eu", "").replace("set -euo", ""))
+    check("driver captures the invocation before parsing",
+          "WEAKNESS_INVOKED_CMD" in src)
+    check("driver runs the self-test", "selftest.py" in src)
+
+
+def test_driver_no_input_exits_2():
+    import subprocess
+    path = os.path.join(SCRIPTS, "run_weakness_analysis.sh")
+    proc = subprocess.run(["bash", path], stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, timeout=120)
+    out = (proc.stdout + proc.stderr).decode("utf-8", "replace")
+    check("no input mode exits 2", proc.returncode == 2, "got %d" % proc.returncode)
+    check("usage names all five input modes",
+          all(m in out for m in ("--root", "--projects", "--corpus", "--org", "--db")))
+
+
+def test_gate_exit_codes():
+    import tempfile
+    import json as _json
+    import merge_insights
+    policy = _policy.load_policy()
+    projects = [{"project_slug": "a", "readiness": "production-ready", "security_risk": "low"},
+                {"project_slug": "b", "readiness": "needs-work", "security_risk": "critical"},
+                {"project_slug": "c", "readiness": "unknown", "security_risk": "none"}]
+    import copy
+    p1 = copy.deepcopy(projects)
+    check("a critical finding blocks at --fail-on high",
+          merge_insights.apply_gate(p1, policy, "high", "not-ready") is True)
+    check("the critical project is the blocked one",
+          [x["project_slug"] for x in p1 if x["blocked"]] == ["b", "c"],
+          "got %s" % [x["project_slug"] for x in p1 if x["blocked"]])
+    p2 = copy.deepcopy(projects)
+    check("--fail-on none disables the security gate for b",
+          merge_insights.apply_gate(p2, policy, "none", "none") is False)
+    p3 = copy.deepcopy(projects)
+    merge_insights.apply_gate(p3, policy, "none", "not-ready")
+    check("readiness unknown blocks at the default readiness threshold",
+          [x["project_slug"] for x in p3 if x["blocked"]] == ["c"])
+    p4 = copy.deepcopy(projects)
+    merge_insights.apply_gate(p4, policy, "none", "needs-work")
+    check("--fail-on-readiness needs-work also blocks needs-work",
+          set(x["project_slug"] for x in p4 if x["blocked"]) == set(("b", "c")))
 
 
 if __name__ == "__main__":
