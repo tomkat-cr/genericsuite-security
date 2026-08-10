@@ -17,10 +17,10 @@ This project adheres to [Semantic Versioning](http://semver.org/) and [Keep a Ch
 ### Security
 
 
-## [1.0.0] - 2026-08-05
+## [1.0.0] - 2026-07-15
 
 ### Added
-- Project ideation and initial development as a response to the Keyv and Cacheable NPM supply chain attack [GS-339].
+- Project ideation and initial development as a response to the Keyv and Cacheable NPM supply chain attack (2026-08-04): https://socket.dev/supply-chain-attacks/keyv-and-cacheable-compromise [GS-339].
 - New skill `supply-chain-ioc-scan`: use when a compromised npm/PyPI package or supply-chain worm is disclosed and you must determine whether this machine or repo tree is affected. Developed on 2026-08-04 due to thee Shai-Hulud keyv and cacheable compromise.
 - New skill `repo-corpus`:
   - `repo-corpus` skill (phase 1 of the org-wide repository scanner design): enumerates an org or user via `gh`, clones with hardened flags, and emits a `corpus.json` manifest. Ships `scripts/_walk.py` (shared walking with prune counting and unreadable-path tracking) and a self-test that proves the clone hardening holds.
