@@ -17,7 +17,7 @@ This project adheres to [Semantic Versioning](http://semver.org/) and [Keep a Ch
 ### Security
 
 
-## [1.0.0] - 2026-07-15
+## [1.0.0] - 2026-08-30
 
 ### Added
 - Project ideation and initial development as a response to the Keyv and Cacheable NPM supply chain attack (2026-08-04): https://socket.dev/supply-chain-attacks/keyv-and-cacheable-compromise [GS-339].
