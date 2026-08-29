@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "project_markers": [
+    ".git", "package.json", "pyproject.toml", "requirements.txt", "Pipfile",
+    "go.mod", "Cargo.toml", "Gemfile", "composer.json", "pom.xml",
+    "build.gradle", "pubspec.yaml", "Dockerfile", "docker-compose.yml"
+  ],
+  "prune_dirs": [
+    "node_modules", ".git", "vendor", "dist", "build", ".venv", "venv",
+    "__pycache__", ".next", ".tox", "target"
+  ],
+  "discovery": { "max_depth": 3, "split_monorepo": false },
+  "readiness_order": ["production-ready", "needs-work", "not-ready", "unknown"],
+  "severity_order": ["critical", "high", "medium", "low", "none"],
+  "readiness_rules": [
+    {
+      "tier": "production-ready",
+      "reason": "production_readiness >= 4 and maturity >= 4 and code_organization >= 3, with no critical or high open security finding",
+      "min_scores": { "production_readiness": 4, "maturity": 4, "code_organization": 3 },
+      "max_open_severity": "medium"
+    },
+    {
+      "tier": "needs-work",
+      "reason": "production_readiness >= 2 and maturity >= 2",
+      "min_scores": { "production_readiness": 2, "maturity": 2 },
+      "max_open_severity": null
+    },
+    {
+      "tier": "not-ready",
+      "reason": "scores below the needs-work threshold, or judged boilerplate or empty scaffolding",
+      "min_scores": {},
+      "max_open_severity": null
+    }
+  ],
+  "unknown_reason": "the analyze agent produced no output, or output that failed schema validation; an unscanned project is not a safe one",
+  "gate_defaults": { "fail_on": "high", "fail_on_readiness": "not-ready" },
+  "dispatch": { "max_parallel": 6, "analyze_model": "sonnet", "analyze_agent_type": "Explore", "security_model": "sonnet", "security_agent_type": "general-purpose", "digest_model": "haiku" },
+  "open_statuses": ["open", "partial", "new"],
+  "table_columns": [
+    "project_slug", "name", "repo_url", "repo_source_field", "path", "branch",
+    "head_sha", "stars", "forks", "contributors", "commit_count", "code_loc",
+    "license", "primary_language", "project_type", "uses_orm", "orm_or_db_layer",
+    "maturity_score", "production_readiness_score", "code_organization_score",
+    "maintainability_score", "readiness", "security_risk", "previous_risk",
+    "open_findings", "resolved_findings", "red_flags_count", "blocked",
+    "audited_at", "reaudited_at"
+  ],
+  "db_source": {
+    "table": "projects",
+    "slug_column": "slug",
+    "name_column": "name",
+    "repo_url_columns": ["contribute_in_url", "project_url", "description_markdown"],
+    "metadata_columns": ["lifecycle_status", "status", "project_url", "video_url", "countries", "participant_name", "description_markdown"],
+    "filter": null,
+    "page_size": 1000
+  },
+  "secrets": {
+    "confirmed_tracked_files": [
+      "^\\.env$", "^\\.env\\.local$", "^\\.env\\.(dev|qa|staging|prod|production|test)$",
+      "\\.pem$", "\\.p12$", "(^|/)id_rsa$", "(^|/)id_dsa$",
+      "(^|/)service-account.*\\.json$"
+    ],
+    "review_patterns": [
+      { "name": "aws-access-key-id", "regex": "\\bAKIA[0-9A-Z]{16}\\b" },
+      { "name": "google-api-key", "regex": "\\bAIza[0-9A-Za-z_\\-]{35}\\b" },
+      { "name": "slack-token", "regex": "\\bxox[baprs]-[0-9A-Za-z-]{10,}\\b" },
+      { "name": "github-pat", "regex": "\\bgh[pousr]_[0-9A-Za-z]{36,}\\b" },
+      { "name": "stripe-key", "regex": "\\b[sr]k_(live|test)_[0-9A-Za-z]{16,}\\b" },
+      { "name": "private-key-block", "regex": "-----BEGIN (RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----" },
+      { "name": "db-url-with-password", "regex": "\\b(postgres|postgresql|mysql|mongodb)(\\+srv)?://[^\\s:@/]+:[^\\s:@/]+@" },
+      { "name": "supabase-service-role", "regex": "\"?service_role\"?\\s*[:=]\\s*[\"']?eyJ[0-9A-Za-z_\\-]{20,}" },
+      { "name": "jwt-signing-secret", "regex": "\\b(JWT_SECRET|SECRET_KEY|SIGNING_SECRET)\\s*[:=]\\s*[\"']?[0-9A-Za-z_\\-!@#$%^&*]{12,}" }
+    ],
+    "benign_filenames": ["^\\.env\\.example$", "^\\.env\\.sample$", "^\\.env\\.template$"],
+    "benign_value_patterns": [
+      "^x{3,}$", "^changeme$", "^your[-_].*$", "^<.*>$", "^\\$\\{.*\\}$",
+      "^example$", "^placeholder$", "^dummy$", "^test$", "^\\.\\.\\.$"
+    ],
+    "benign_context_patterns": [
+      "\"integrity\"\\s*:", "\"resolved\"\\s*:", "^\\s*#", "^\\s*//"
+    ],
+    "benign_path_patterns": ["(^|/)(tests?|fixtures?|mocks?|__tests__|examples?)(/|$)"],
+    "max_file_bytes": 2097152
+  }
+}

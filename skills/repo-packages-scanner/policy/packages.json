@@ -1,0 +1,66 @@
+{
+  "name": "default-packages-pinning-policy",
+  "version": "1.0",
+  "description": "Pinning policy for language dependencies and CI actions. Scanners are policy-agnostic; everything opinionated lives here.",
+
+  "default_npm_registry": "registry.npmjs.org",
+  "_npm_registry_note": "Any .npmrc registry= or @scope:registry= pointing elsewhere is a dependency-confusion surface, not necessarily malicious - flagged for review, not auto-condemned.",
+
+  "priority_rules": [
+    {"tier": "P0", "when": {"path_glob": "**/.github/workflows/*",
+                            "content_contains_any": ["release", "publish", "deploy", "cd.yml", "cd.yaml"]},
+     "why": "unpinned reference in a release/publish workflow - can change what the next tag ships",
+     "_content_contains_any_note": "Matched against path+content combined, lowercase - catches both a workflow named release.yml and one merely triggered `on: release:` inside an otherwise generic filename."},
+    {"tier": "P0", "when": {"path_glob": "**/.github/workflows/*"},
+     "why": "runs in CI with credentials"},
+    {"tier": "P0", "when": {"path_glob": "**/.gitlab-ci*.y*ml"},
+     "why": "runs in CI with credentials"},
+    {"tier": "P0", "when": {"path_glob": "**/.github/actions/**"},
+     "why": "composite action, runs in CI with credentials"},
+    {"tier": "P1", "when": {"path_glob": "**/package.json"},
+     "why": "build time; affects what gets installed"},
+    {"tier": "P1", "when": {"path_glob": "**/requirements*.txt"},
+     "why": "build time; affects what gets installed"},
+    {"tier": "P1", "when": {"path_glob": "**/pyproject.toml"},
+     "why": "build time; affects what gets installed"},
+    {"tier": "P1", "when": {"path_glob": "**/go.mod"},
+     "why": "build time; affects what gets installed"},
+    {"tier": "P1", "when": {"path_glob": "**/Cargo.toml"},
+     "why": "build time; affects what gets installed"},
+    {"tier": "P1", "when": {"path_glob": "**/Gemfile"},
+     "why": "build time; affects what gets installed"},
+    {"tier": "P2", "when": {"path_glob": "**/example*/**"}, "why": "examples and demos"},
+    {"tier": "P2", "when": {"path_glob": "**/demo*/**"}, "why": "examples and demos"},
+    {"tier": "P2", "when": {"path_glob": "**/docs/**"}, "why": "documentation"},
+    {"tier": "P1", "when": {}, "why": "developer machines and build time (default)"}
+  ],
+  "_priority_note": "Ordered; first match wins. Matches the spec's model: P0 = executes in CI with credentials or affects a published artifact; P1 = developer machines and build time; P2 = documentation, examples, demos, dead repositories.",
+
+  "archived_repo_tier": "P2",
+  "_archived_note": "The correct fix for an archived repo is usually archiving harder - deleting it - not editing it.",
+
+  "self_exclude_globs": [
+    "**/skills/repo-packages-scanner/**",
+    "**/skills/repo-docker-scanner/**",
+    "**/skills/supply-chain-ioc-scan/iocs/**"
+  ],
+  "_self_exclude_note": "A scanner's own fixtures legitimately contain every pattern it hunts for. Exclusions are COUNTED and listed in the report - a silent exclusion is how a real finding disappears.",
+
+  "npm_lockfile_names": ["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "npm-shrinkwrap.json"],
+  "pypi_lockfile_names": ["poetry.lock", "uv.lock", "Pipfile.lock"],
+  "go_lockfile_name": "go.sum",
+  "rust_lockfile_name": "Cargo.lock",
+  "ruby_lockfile_name": "Gemfile.lock",
+
+  "known_action_orgs": ["actions", "github", "docker", "gradle", "azure", "aws-actions",
+                        "hashicorp", "google-github-actions", "pypa", "codecov",
+                        "softprops", "peaceiris", "EndBug"],
+  "_known_action_orgs_note": "Not a static acceptability signal (any of these can still be unpinned) - only used to keep the self-test's fixture noise-free. Ownership (personal-account / archived-upstream) is a --resolve-only network check (D1); this list has no bearing on it.",
+
+  "remote_exec_shells": ["sh", "bash", "zsh", "dash"],
+
+  "known_benign_collisions": {
+    "value_prefixes": ["file:", "link:", "workspace:", "npm:", "portal:"],
+    "_value_note": "npm's own local/workspace protocol specifiers (file:, link:, workspace:) are not registry ranges and are never a mutability finding - the referenced path is version-controlled alongside the manifest."
+  }
+}

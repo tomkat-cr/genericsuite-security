@@ -1,0 +1,18 @@
+{
+  "name": "genericsuite",
+  "description": "Adds the GenericSuite ecosystem's stated non-negotiables from the monorepo CLAUDE.md.",
+  "agent_instructions": {
+    "analyze": [
+      "This project may follow GenericSuite conventions. Check whether backend functions return the standard shape {\"error\": bool, \"error_message\": str|None, \"resultset\": Any}, and note every deviation in weaknesses[].",
+      "Check whether CRUD entities, menus, and DB schemas are defined in JSON configuration rather than per-entity code. Hand-written per-entity code where JSON config was intended is a maintainability weakness."
+    ],
+    "security": [
+      "Password hashing MUST be scrypt. Report any use of bcrypt, MD5, SHA-1, or an unsalted hash as a high-severity finding.",
+      "SQL MUST use parameterized queries with identifier quoting. Report string-interpolated SQL as critical.",
+      "Any AI-generated or user-supplied URL passed to a fetch must be wrapped by is_safe_url(); any file path by is_safe_local_path(). Report an unwrapped call as high (SSRF or LFI).",
+      "Secrets MUST come from stage-specific .env files, never hardcoded. Report any hardcoded credential as critical.",
+      "Log statements MUST sanitize newlines before logging user-controlled values. Report unsanitized logging as medium (log injection)."
+    ]
+  },
+  "extra_checks": []
+}

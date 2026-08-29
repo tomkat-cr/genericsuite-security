@@ -216,3 +216,18 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Node.js
+
+node_modules/
+
+# Generic Suite
+
+tmp/
+
+# Git worktrees (subagent-driven-development isolated workspaces)
+.worktrees/
+
+# project-weakness-analysis working directory (regenerable)
+# insights/.work/
+insights/

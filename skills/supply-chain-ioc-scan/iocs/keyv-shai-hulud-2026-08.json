@@ -1,0 +1,215 @@
+{
+  "campaign": "keyv / cacheable npm supply-chain worm (Shai-Hulud: Here We Go Again)",
+  "date": "2026-08-04",
+  "source": "https://www.wiz.io/blog/keyv-and-cacheable-npm-supply-chain-attack",
+  "package_list_sources": [
+    {
+      "name": "socket.dev",
+      "url": "https://socket.dev/api/public/supply-chain-attacks/keyv-and-cacheable-compromise/packages.csv",
+      "incident_page": "https://socket.dev/supply-chain-attacks/keyv-and-cacheable-compromise",
+      "provenance": "Primary feed. Supplied by the company incident-response team handling this campaign; the CSV is the machine-readable export of Socket's public incident page.",
+      "notes": "Live feed, updated minute-by-minute. One row per package@version; scoped names split into Namespace+Name. Includes non-npm ecosystems (golang). The HTML incident page sits behind Cloudflare bot protection and is not fetchable by script - read it in a browser. The /api/public/ CSV path returns 200 to plain HTTP clients and is what this skill consumes."
+    },
+    {
+      "name": "wiz",
+      "url": "https://raw.githubusercontent.com/wiz-sec-public/wiz-research-iocs/refs/heads/main/reports/keyv-packages.csv",
+      "notes": "Periodic snapshot. One row per package with versions comma-joined. Kept as a second source for resilience and cross-checking.",
+      "provenance": "Secondary feed. Public Wiz Research IOC repository, cited in their campaign write-up; kept as an independent cross-check and as failover if the primary feed is unreachable."
+    },
+    {
+      "name": "datadog",
+      "url": "https://raw.githubusercontent.com/DataDog/indicators-of-compromise/keyv-campaign/keyv-campaign/malicious-packages.csv",
+      "incident_page": "https://securitylabs.datadoghq.com/articles/npm-worm-compromises-popular-npm-packages/",
+      "provenance": "Datadog Security Labs IOC repo, published alongside their payload teardown. Layout: ecosystem,package,versions.",
+      "notes": "Third independent source. Their write-up is the deepest public payload analysis and is the origin of most host-persistence IOCs in this profile."
+    }
+  ],
+  "package_list_url": "https://socket.dev/api/public/supply-chain-attacks/keyv-and-cacheable-compromise/packages.csv",
+  "domains": [
+    "npm-cache.com",
+    "js-mirror.com",
+    "pypi-get.com",
+    "eth-mainnet.nodereal.io",
+    "go.getblock.io",
+    "eth.llamarpc.com"
+  ],
+  "strings": [
+    "IfYouBlockThisAPIKeyItWillCrashTheLiveProductionServersOfAllThirdPartyClients",
+    "Shai-Hulud: Here We Go Again",
+    "StringListStore",
+    "0xE1f2395ee43e45A1556EC6438a88c31B83493103",
+    "0x53ed5143",
+    "thebeautifulmarchoftime",
+    "thebeautifulsnadsoftime",
+    "_NODE_RUNTIME_INIT",
+    "tmp.dpkg_14527.lock",
+    "dc1e6a7ddb29390dd53cf1e5aac40ad9204ea7c6b83ef5656e7cb7a796808b67",
+    "166be2b7b58a440f7b17520ffb0368be5d89c76661704b4945417eb04b9ada65"
+  ],
+  "file_hashes_sha1": {
+    "35a672cf34b996b91f3e1c28cbf3a05a37e036e4": "Math_Symbol.js / math_init.js payload [Wiz]",
+    "686aa40d0fc22c8d569494543a0f891f359f2f99": "setup.mjs (.claude IDE persistence) [Wiz]",
+    "f525d52ceb966516686b482d3dc0137028cc6a63": "setup.mjs (.vscode IDE persistence) [Wiz]"
+  },
+  "file_hashes_sha256": {
+    "54dc7ea54a1317cca0e890a2770630cf7fa6c97813e0cb9d2caa93012b350668": "setup.mjs (original) [Aikido]",
+    "fd3ca4007b225fdf8de7af4345a19179d5efa8c4bb9205f88cda806e5684b1eb": "setup.mjs (community-spread variant) [Aikido]",
+    "9fc2570b7cef51c1b8df116d144d11ff4096357be7d2c4c6367cfc2509cf1bcc": "Math_Symbol.js / math_init.js payload [Aikido]",
+    "927387d0cfac1118df4b383decc2ea6ba49c9d2f98b47098bcbcba1efc026e1f": "MALICIOUS .vscode/tasks.json (folderOpen -> node .claude/setup.mjs) [Datadog]",
+    "14eb4ce01dd4307759887ff819359b70d7d9ff709ecde039a5abc1aac325b128": "MALICIOUS .claude/settings.json (SessionStart -> node .vscode/setup.mjs) [Datadog]",
+    "3f3f42d072bd36860ab7bd7fb5e10ac0d22c741c13c89505ccd6ec0ea572eea7": "Injected GitHub workflow (codeql_analysis.yml secret-exfil) [Datadog]",
+    "29ac906c8bd801dfe1cb39596197df49f80fff2270b3e7fbab52278c24e4f1a7": "Runner-memory Python (reads Runner.Worker /proc/<pid>/mem) [Datadog]",
+    "619c56acf572df75b6004a6fc013c80900316a76099b241d64312da3a44f10b4": "Token-monitor installer (dormant gh-token-monitor persistence) [Datadog]"
+  },
+  "install_hook_patterns": [
+    "node\\s+setup\\.mjs",
+    "setup\\.mjs",
+    "math_init\\.js",
+    "Math_Symbol\\.js",
+    "bun_environment\\.js",
+    "setup_bun\\.js"
+  ],
+  "ide_persistence": [
+    {
+      "path_suffix": ".claude/settings.json",
+      "markers": [
+        "SessionStart"
+      ]
+    },
+    {
+      "path_suffix": ".claude/settings.local.json",
+      "markers": [
+        "SessionStart"
+      ]
+    },
+    {
+      "path_suffix": ".vscode/tasks.json",
+      "markers": [
+        "folderOpen"
+      ]
+    },
+    {
+      "path_suffix": ".vscode/settings.json",
+      "markers": [
+        "chat.tools.autoApprove"
+      ]
+    }
+  ],
+  "process_patterns": [
+    "setup\\.mjs",
+    "Math_Symbol\\.js",
+    "math_init\\.js",
+    "bun_environment\\.js"
+  ],
+  "path_patterns": [
+    "node_modules/keyv/Math_Symbol.js",
+    ".claude/setup.mjs",
+    ".vscode/setup.mjs",
+    "**/math_init.js",
+    ".claude/math_init.js"
+  ],
+  "orphan_filenames": [
+    "setup_bun.js",
+    "bun_environment.js",
+    "truffleSecrets.json",
+    "processor.sh"
+  ],
+  "tmp_dir_globs": [
+    "bun-dl-*"
+  ],
+  "github_repo_description_markers": [
+    "shai-hulud",
+    "here we go again"
+  ],
+  "expected_registries": {
+    "npm": "https://registry.npmjs.org/",
+    "pypi": "https://pypi.org/simple"
+  },
+  "known_benign_collisions": [
+    {
+      "path_contains": "regenerate-unicode-properties/General_Category/Math_Symbol.js",
+      "reason": "Legitimate Unicode general-category data table. IOC is specifically node_modules/keyv/Math_Symbol.js."
+    },
+    {
+      "path_contains": "motion-dom/dist/es/gestures/utils/setup.mjs",
+      "reason": "Legitimate motion library gesture helper. IOC is setup.mjs inside .claude/ or .vscode/."
+    },
+    {
+      "path_contains": "/node_modules/.bin/",
+      "reason": "Symlinked binaries, not payload."
+    }
+  ],
+  "payload_size_hints": [
+    {
+      "filename": "Math_Symbol.js",
+      "min_bytes": 102400,
+      "note": "Second stage is an obfuscated ~728 KB blob. Legitimate files of this name (regenerate-unicode-properties Unicode tables) are ~1 KB - a ~700x separation, so size catches variants whose hash is not yet published."
+    },
+    {
+      "filename": "math_init.js",
+      "min_bytes": 102400,
+      "note": "Same second-stage payload under its alternate name."
+    }
+  ],
+  "campaign_facts": {
+    "first_malicious_publish": "keyv@6.0.0 at 2026-08-04T09:35Z",
+    "infection_chain": "preinstall hook (setup.mjs) -> downloads standalone Bun runtime -> executes obfuscated ~728 KB second stage (Math_Symbol.js)",
+    "credential_targets": [
+      "AWS instance metadata",
+      "HashiCorp Vault",
+      "Kubernetes",
+      "GitHub Actions",
+      "npm tokens"
+    ],
+    "exfil_method": "AES-256-GCM under an operator public key, delivered to threat-actor GitHub repos and DNS-resolved destinations",
+    "provenance_bypass": "keyv@6.0.0 shipped with PASSING npm provenance (signed SLSA attestation): the legitimate release workflow built already-trojanized source, so signature verification succeeded on malware. Provenance/attestation checks do NOT detect this campaign.",
+    "propagation": "worm republishes trojanized versions of every package the stolen npm token can reach, minting fresh sigstore provenance for each",
+    "bun_reuse": "The loader accepts ANY already-installed bun that runs (it does not require v1.3.13) and only downloads Bun into a bun-dl-* temp dir when bun is ABSENT. On a host with Bun installed, absence of bun-dl-* is therefore NOT evidence of non-infection.",
+    "c2_code_execution": "Primary C2 response is eval'd unsandboxed and unsigned, so the implant is a general remote code-execution channel, not only a credential stealer.",
+    "first_malicious_state": "2026-08-04T09:02:37Z (commit 29c773...), ~32 min before the keyv@6.0.0 publish at 09:35:00.763Z"
+  },
+  "host_persistence_paths": [
+    "~/.local/bin/gh-token-monitor.sh",
+    "~/.config/gh-token-monitor/token",
+    "~/.config/gh-token-monitor/handler",
+    "~/.config/gh-token-monitor/started_at",
+    "~/Library/LaunchAgents/com.user.gh-token-monitor.plist",
+    "~/.config/systemd/user/gh-token-monitor.service",
+    "/tmp/gh-token-monitor.out.log",
+    "/tmp/gh-token-monitor.err.log"
+  ],
+  "runtime_markers": {
+    "lock_files": [
+      "tmp.dpkg_14527.lock"
+    ],
+    "env_guard": "_NODE_RUNTIME_INIT=1",
+    "notes": "Single-instance lock lives under the OS temp dir; env guard prevents detached-child recursion."
+  },
+  "ide_cross_wiring": [
+    {
+      "path_suffix": ".claude/settings.json",
+      "must_not_reference": ".vscode/",
+      "detail": "Malicious SessionStart hook runs node .vscode/setup.mjs - a Claude hook pointing into .vscode/ is anomalous."
+    },
+    {
+      "path_suffix": ".vscode/tasks.json",
+      "must_not_reference": ".claude/",
+      "detail": "Malicious folderOpen task runs node .claude/setup.mjs - a VS Code task pointing into .claude/ is anomalous."
+    }
+  ],
+  "exact_scripts_signatures": [
+    {
+      "scripts": {
+        "preinstall": "node setup.mjs"
+      },
+      "detail": "Worm REPLACES the entire scripts object with exactly this when republishing a stolen package."
+    }
+  ],
+  "injected_ci_artifacts": {
+    "branch": "dependabot/github_actions/format/setup-formatter",
+    "workflow_file": ".github/workflows/codeql_analysis.yml",
+    "artifact": "format-results.txt",
+    "detail": "Created to exfiltrate ${{ toJSON(secrets) }}; run and branch are deleted afterwards but audit-log/artifact records may remain."
+  },
+  "_path_pattern_policy": "Only filenames with NO legitimate use at that path belong here (setup.mjs, math_init.js). Files that are normally legitimate (.claude/settings.json, .vscode/tasks.json) must be confirmed by hash or cross-wiring instead - confirming them by path would flag every developer's IDE config."
+}

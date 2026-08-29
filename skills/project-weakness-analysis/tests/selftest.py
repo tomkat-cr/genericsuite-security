@@ -1,0 +1,1644 @@
+#!/usr/bin/env python3
+"""
+selftest.py - Positive control for project-weakness-analysis.
+
+WHY THIS EXISTS
+    A scanner that reports "clean" on everything is indistinguishable from a
+    working one when the projects are genuinely clean. This builds synthetic
+    projects with known positives, asserts every detector fires, and asserts
+    the documented benign lookalikes do NOT. It also asserts the readiness
+    legend is generated from policy rather than hand-written - the exact bug
+    that shipped once already in repo-docker-scanner's report.
+
+Exit: 0 all assertions passed, 1 something is broken (do not trust a scan).
+"""
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SKILL = os.path.dirname(HERE)
+SCRIPTS = os.path.join(SKILL, "scripts")
+PACKAGE_ROOT = os.path.dirname(os.path.dirname(SKILL))
+CORPUS_SCRIPTS = os.path.join(os.path.dirname(SKILL), "repo-corpus", "scripts")
+
+sys.path.insert(0, SCRIPTS)
+sys.path.insert(0, CORPUS_SCRIPTS)
+
+import _policy   # noqa: E402
+import _redact   # noqa: E402
+
+GREEN, RED, YELLOW, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[0m"
+results = []
+skipped = []
+
+
+def check(name, condition, detail=""):
+    results.append((name, bool(condition)))
+    tag = "%sPASS%s" % (GREEN, RESET) if condition else "%sFAIL%s" % (RED, RESET)
+    print("  [%s] %s" % (tag, name) + (("\n         " + detail) if detail and not condition else ""))
+
+
+def skip(name, why):
+    """A skipped assertion is NOT a passed one. Excluded from the count."""
+    skipped.append((name, why))
+    print("  [%sSKIP%s] %s - %s" % (YELLOW, RESET, name, why))
+
+
+def write(path, content):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return path
+
+
+def test_policy_loads():
+    p = _policy.load_policy()
+    check("policy loads with the generic profile", p["schema_version"] == 1)
+    check("readiness_order has four tiers", len(p["readiness_order"]) == 4)
+    check("unknown is the last readiness tier", p["readiness_order"][-1] == "unknown")
+    check("severity_order starts at critical", p["severity_order"][0] == "critical")
+    check("every readiness rule carries a reason",
+          all(r.get("reason") for r in p["readiness_rules"]))
+    gs = _policy.load_policy("genericsuite")
+    check("genericsuite profile adds security instructions",
+          any("scrypt" in i for i in gs["agent_instructions"]["security"]))
+    check("generic profile adds none",
+          _policy.load_policy()["agent_instructions"]["security"] == [])
+
+
+def test_redaction():
+    cmd = "./run.sh --db --db-url postgres://u:pw@host/db"
+    out = _redact.redact_command(cmd)
+    check("connection URI is redacted", "postgres://u:pw@host/db" not in out)
+    check("flag value is redacted", "pw" not in out)
+    check("masked value hides the secret",
+          _redact.mask_value("AKIAIOSFODNN7EXAMPLE").startswith("AKIA")
+          and "IOSFODNN7EXAMPLE" not in _redact.mask_value("AKIAIOSFODNN7EXAMPLE"))
+
+
+def test_marketplace_registration():
+    import json
+    path = os.path.join(PACKAGE_ROOT, ".claude-plugin", "marketplace.json")
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    paths = [s for p in data["plugins"] for s in p.get("skills", [])]
+    check("skill is registered in marketplace.json",
+          "./skills/project-weakness-analysis" in paths)
+    for rel in paths:
+        check("registered path exists: %s" % rel,
+              os.path.isdir(os.path.join(PACKAGE_ROOT, rel)))
+
+
+def build_discovery_fixture(base):
+    """A root holding: a normal project, a monorepo, a nested node_modules trap."""
+    write(os.path.join(base, "alpha", "package.json"), '{"name":"alpha"}')
+    write(os.path.join(base, "alpha", "node_modules", "dep", "package.json"), '{"name":"dep"}')
+    write(os.path.join(base, "beta", "pyproject.toml"), "[project]\nname='beta'\n")
+    write(os.path.join(base, "mono", "frontend", "package.json"), '{"name":"fe"}')
+    write(os.path.join(base, "mono", "backend", "pyproject.toml"), "[project]\nname='be'\n")
+    os.makedirs(os.path.join(base, "mono", ".git"), exist_ok=True)
+    write(os.path.join(base, "notaproject", "README.md"), "# just docs\n")
+    return base
+
+
+def test_discovery():
+    import tempfile
+    import discover_projects
+    policy = _policy.load_policy()
+    with tempfile.TemporaryDirectory() as base:
+        build_discovery_fixture(base)
+        found, stats = discover_projects.discover(base, policy)
+        names = sorted(os.path.basename(p) for p in found)
+        check("finds every marker-bearing project", names == ["alpha", "beta", "mono"],
+              "got %s" % names)
+        check("a package.json inside node_modules is not a project",
+              not any("node_modules" in p for p in found))
+        check("a directory with no marker is not a project", "notaproject" not in names)
+
+        split, _ = discover_projects.discover(base, policy, split_monorepo=True)
+        split_names = sorted(os.path.basename(p) for p in split)
+        check("--split-monorepo yields the subdirectories",
+              "frontend" in split_names and "backend" in split_names,
+              "got %s" % split_names)
+
+        shallow, sstats = discover_projects.discover(base, policy, max_depth=0)
+        check("max_depth=0 finds nothing under the root", shallow == [])
+        check("depth truncation is recorded", sstats.truncated is not None)
+
+        capped, cstats = discover_projects.discover(base, policy, limit=1)
+        check("--limit caps the list", len(capped) == 1)
+        check("--limit truncation is recorded", cstats.truncated is not None)
+
+
+def test_discovery_symlink_escape():
+    import tempfile
+    import discover_projects
+    policy = _policy.load_policy()
+    with tempfile.TemporaryDirectory() as outside:
+        write(os.path.join(outside, "secret", "package.json"), "{}")
+        with tempfile.TemporaryDirectory() as base:
+            write(os.path.join(base, "real", "package.json"), "{}")
+            link = os.path.join(base, "escape")
+            try:
+                os.symlink(os.path.join(outside, "secret"), link)
+            except (OSError, NotImplementedError):
+                skip("symlinks cannot escape the discovery root", "symlink unsupported here")
+                return
+            found, _ = discover_projects.discover(base, policy)
+            check("symlinks cannot escape the discovery root",
+                  all(os.path.realpath(p).startswith(os.path.realpath(base)) for p in found),
+                  "got %s" % found)
+
+
+def build_secrets_fixture(base):
+    proj = os.path.join(base, "leaky")
+    write(os.path.join(proj, ".env"), "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n")
+    write(os.path.join(proj, ".env.example"), "AWS_ACCESS_KEY_ID=your-key-here\n")
+    write(os.path.join(proj, "src", "config.js"),
+          "const k = 'AKIAIOSFODNN7EXAMPLE';\n"
+          "const db = 'postgres://admin:hunter2@db.example.com/app';\n")
+    write(os.path.join(proj, "package-lock.json"),
+          '{"integrity": "sha512-AIzaSyA1234567890123456789012345678901"}\n')
+    write(os.path.join(proj, "tests", "fixture.js"), "const k = 'xxx';\n")
+    write(os.path.join(proj, "docs", "setup.md"), "# set SECRET_KEY = changeme\n")
+    return proj
+
+
+def test_secrets():
+    import tempfile
+    import _secrets
+    policy = _policy.load_policy()
+    with tempfile.TemporaryDirectory() as base:
+        proj = build_secrets_fixture(base)
+        tracked = [".env", ".env.example", "src/config.js", "package-lock.json",
+                   "tests/fixture.js", "docs/setup.md"]
+        f = _secrets.scan_project(proj, policy, tracked=tracked)
+        by_file = {}
+        for x in f:
+            by_file.setdefault(x["file"], []).append(x)
+
+        check("a tracked .env is CONFIRMED",
+              any(x["tier"] == "CONFIRMED" for x in by_file.get(".env", [])))
+        check("an AWS key in source is REVIEW",
+              any(x["pattern"] == "aws-access-key-id" and x["tier"] == "REVIEW"
+                  for x in by_file.get("src/config.js", [])))
+        check("a db URL with an inline password is REVIEW",
+              any(x["pattern"] == "db-url-with-password"
+                  for x in by_file.get("src/config.js", [])))
+
+        check("BENIGN: .env.example does not fire", ".env.example" not in by_file)
+        check("BENIGN: a lockfile integrity blob does not fire",
+              "package-lock.json" not in by_file)
+        check("BENIGN: a placeholder in a test fixture does not fire",
+              "tests/fixture.js" not in by_file)
+        check("BENIGN: a commented placeholder does not fire",
+              "docs/setup.md" not in by_file)
+
+        check("no finding contains a full secret value",
+              all("IOSFODNN7EXAMPLE" not in x["masked"] for x in f))
+        check("every finding carries file, line, pattern and mask",
+              all(set(("tier", "file", "line", "pattern", "masked")) <= set(x) for x in f))
+
+
+def test_secrets_untracked_env_is_not_confirmed():
+    import tempfile
+    import _secrets
+    policy = _policy.load_policy()
+    with tempfile.TemporaryDirectory() as base:
+        proj = os.path.join(base, "clean")
+        write(os.path.join(proj, ".env"), "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n")
+        f = _secrets.scan_project(proj, policy, tracked=[])
+        check("an UNTRACKED .env is not CONFIRMED",
+              not any(x["tier"] == "CONFIRMED" for x in f))
+
+
+def build_signals_fixtures(base):
+    """Three projects: production-grade, boilerplate skeleton, leaky."""
+    good = os.path.join(base, "good")
+    write(os.path.join(good, "package.json"),
+          '{"name":"good","dependencies":{"express":"4.18.2"}}')
+    write(os.path.join(good, "package-lock.json"), '{"lockfileVersion":3}')
+    write(os.path.join(good, "README.md"), "# good\n" + ("detail\n" * 40))
+    write(os.path.join(good, "LICENSE"), "MIT\n")
+    write(os.path.join(good, ".gitignore"), ".env\n")
+    write(os.path.join(good, "Dockerfile"), "FROM node:20-alpine\n")
+    write(os.path.join(good, ".github", "workflows", "ci.yml"), "on: push\n")
+    write(os.path.join(good, "tests", "app.test.js"), "test('x', () => {});\n")
+    write(os.path.join(good, "src", "app.js"), "const e = require('express');\n" * 20)
+    write(os.path.join(good, ".env.example"), "PORT=3000\n")
+
+    skel = os.path.join(base, "skeleton")
+    write(os.path.join(skel, "package.json"), '{"name":"skeleton"}')
+    write(os.path.join(skel, "README.md"), "# skeleton\n")
+
+    return good, skel
+
+
+def test_collect_signals():
+    import tempfile
+    import collect_signals
+    policy = _policy.load_policy()
+    with tempfile.TemporaryDirectory() as base:
+        good, skel = build_signals_fixtures(base)
+
+        g = collect_signals.collect(good, "good", policy, corpus_entry=None)
+        check("detects a committed lockfile", g["manifests"]["lockfiles"] == ["package-lock.json"],
+              "got %s" % g["manifests"]["lockfiles"])
+        check("detects tests", g["quality"]["has_tests"] is True)
+        check("detects CI", g["quality"]["has_ci"] is True)
+        check("detects a Dockerfile", g["deploy"]["has_dockerfile"] is True)
+        check("detects a README with real length", g["quality"]["readme_bytes"] > 100)
+        check("detects LICENSE", g["quality"]["has_license"] is True)
+        check("counts lines of code", g["size"]["code_loc"] > 0)
+        check("records .env.example", g["config_hygiene"]["has_env_example"] is True)
+        check("siblings starts empty", g["siblings"] == {})
+        check("walk_stats is carried", "unreadable" in g["walk_stats"])
+
+        s = collect_signals.collect(skel, "skeleton", policy, corpus_entry=None)
+        check("skeleton has no tests", s["quality"]["has_tests"] is False)
+        check("skeleton has no CI", s["quality"]["has_ci"] is False)
+        check("skeleton has no lockfile", s["manifests"]["lockfiles"] == [])
+        check("skeleton has no Dockerfile", s["deploy"]["has_dockerfile"] is False)
+
+
+def test_collect_signals_writes_nothing_into_projects():
+    import tempfile
+    import collect_signals
+    policy = _policy.load_policy()
+    with tempfile.TemporaryDirectory() as base:
+        good, _ = build_signals_fixtures(base)
+        before = set()
+        for r, d, fs in os.walk(good):
+            for x in fs:
+                before.add(os.path.join(r, x))
+        collect_signals.collect(good, "good", policy, corpus_entry=None)
+        after = set()
+        for r, d, fs in os.walk(good):
+            for x in fs:
+                after.add(os.path.join(r, x))
+        check("collecting writes nothing inside a scanned project", before == after,
+              "added: %s" % (after - before))
+
+
+def test_siblings_absent_is_visible():
+    import tempfile
+    import _siblings
+    with tempfile.TemporaryDirectory() as base:
+        corpus = os.path.join(base, "corpus.json")
+        write(corpus, '{"schema_version":1,"root":"%s","repos":[]}' % base)
+        out = _siblings.run_all(corpus, base, skill_dirs={"docker": os.path.join(base, "nope")})
+        check("a missing sibling scanner is recorded as unavailable",
+              out["docker"]["available"] is False)
+        check("a missing sibling scanner records a reason",
+              bool(out["docker"]["reason"]))
+        check("a missing sibling scanner never reports zero findings as fact",
+              out["docker"].get("by_project") == {})
+
+
+def test_siblings_attach():
+    import tempfile
+    import json as _json
+    import _siblings
+    with tempfile.TemporaryDirectory() as base:
+        ev = os.path.join(base, "evidence")
+        os.makedirs(ev)
+        with open(os.path.join(ev, "alpha.json"), "w", encoding="utf-8") as f:
+            _json.dump({"project_slug": "alpha", "siblings": {}}, f)
+        siblings = {"docker": {"available": True, "reason": "",
+                               "by_project": {"alpha": [{"priority": "P0", "ref": "nginx:latest"}]}}}
+        _siblings.attach(ev, siblings)
+        with open(os.path.join(ev, "alpha.json"), "r", encoding="utf-8") as f:
+            bundle = _json.load(f)
+        check("sibling findings are attached to the evidence bundle",
+              bundle["siblings"]["docker"]["findings"][0]["ref"] == "nginx:latest")
+        check("attach records availability per scanner",
+              bundle["siblings"]["docker"]["available"] is True)
+
+
+def build_crashing_stub_scanner(base):
+    """A fake 'docker' sibling scanner that crashes uncaught (exit 1) without
+    writing findings.json - the failure mode run_one() must never confuse
+    with success."""
+    scripts_dir = os.path.join(base, "stub_docker", "scripts")
+    os.makedirs(scripts_dir, exist_ok=True)
+    script_path = os.path.join(scripts_dir, "scan_images.py")
+    write(script_path,
+          "raise RuntimeError('simulated scanner crash - never completed')\n")
+    return os.path.dirname(scripts_dir)
+
+
+def test_siblings_stale_findings_not_reused_after_crash():
+    import tempfile
+    import json as _json
+    import _siblings
+    with tempfile.TemporaryDirectory() as base:
+        corpus = os.path.join(base, "corpus.json")
+        write(corpus, '{"schema_version":1,"root":"%s","repos":[]}' % base)
+
+        skill_dir = build_crashing_stub_scanner(base)
+        work_dir = os.path.join(base, "work")
+        out_dir = os.path.join(work_dir, "siblings", "docker")
+        os.makedirs(out_dir, exist_ok=True)
+        stale = os.path.join(out_dir, "findings.json")
+        with open(stale, "w", encoding="utf-8") as f:
+            _json.dump({"findings": [{"repo": "alpha",
+                                       "ref": "SHOULD-NOT-SURVIVE-A-CRASH"}]}, f)
+
+        result = _siblings.run_one("docker", skill_dir, corpus, work_dir)
+
+        check("a scanner crash (exit 1, not 0 or 2) is never reported as available",
+              result["available"] is False,
+              "got %s" % result)
+        check("a scanner crash never leaks a stale prior run's findings",
+              "alpha" not in result.get("by_project", {}),
+              "got %s" % result.get("by_project"))
+        check("the stale findings.json is removed before the crash (proves pre-run deletion)",
+              not os.path.exists(stale))
+
+
+def test_mark_siblings_skipped_overwrites_empty_siblings():
+    """Final-review Fix 2: --no-siblings must leave an explicit unavailability
+    sentinel behind, not the empty "siblings": {} default - an empty dict has
+    no "available" key, so merge_insights.py's blind-spot loop silently
+    ignores it and a skipped run reads identically to two clean scans."""
+    import tempfile
+    import json as _json
+    import collect_signals
+    with tempfile.TemporaryDirectory() as ev:
+        with open(os.path.join(ev, "alpha.json"), "w", encoding="utf-8") as f:
+            _json.dump({"project_slug": "alpha", "siblings": {}}, f)
+        collect_signals.mark_siblings_skipped(ev, "skipped by --no-siblings")
+        with open(os.path.join(ev, "alpha.json"), "r", encoding="utf-8") as f:
+            bundle = _json.load(f)
+        check("mark_siblings_skipped marks docker unavailable",
+              bundle["siblings"]["docker"]["available"] is False,
+              "got %s" % bundle.get("siblings"))
+        check("mark_siblings_skipped marks packages unavailable",
+              bundle["siblings"]["packages"]["available"] is False,
+              "got %s" % bundle.get("siblings"))
+        check("mark_siblings_skipped records the given reason",
+              bundle["siblings"]["docker"]["reason"] == "skipped by --no-siblings"
+              and bundle["siblings"]["packages"]["reason"] == "skipped by --no-siblings")
+        check("mark_siblings_skipped gives each sentinel an empty findings list, "
+              "matching _siblings.py's own _empty() shape",
+              bundle["siblings"]["docker"]["findings"] == []
+              and bundle["siblings"]["packages"]["findings"] == [])
+
+
+def test_collect_signals_main_no_siblings_writes_sentinels():
+    """The full path collect_signals.main() takes for --no-siblings, not just
+    the helper in isolation: a real corpus + evidence bundle end to end."""
+    import tempfile
+    import json as _json
+    import collect_signals
+    with tempfile.TemporaryDirectory() as base:
+        proj = os.path.join(base, "solo")
+        write(os.path.join(proj, "package.json"), '{"name":"solo"}')
+        corpus_path = os.path.join(base, "corpus.json")
+        with open(corpus_path, "w", encoding="utf-8") as f:
+            _json.dump({"schema_version": 1, "root": base,
+                        "repos": [{"name": "solo", "path": "solo", "status": "local"}]}, f)
+        evidence_dir = os.path.join(base, "evidence")
+        rc = collect_signals.main(["--corpus", corpus_path, "--out", evidence_dir,
+                                   "--profile", "generic", "--no-siblings"])
+        check("collect_signals.main succeeds with --no-siblings", rc == 0)
+        bundle_path = os.path.join(evidence_dir, "solo.json")
+        check("evidence bundle was written", os.path.isfile(bundle_path))
+        if not os.path.isfile(bundle_path):
+            return
+        with open(bundle_path, "r", encoding="utf-8") as f:
+            bundle = _json.load(f)
+        check("--no-siblings evidence bundle marks docker unavailable "
+              "with a --no-siblings reason (not left as an empty dict)",
+              bundle["siblings"].get("docker", {}).get("available") is False
+              and "--no-siblings" in bundle["siblings"]["docker"].get("reason", ""),
+              "got %s" % bundle.get("siblings"))
+        check("--no-siblings evidence bundle marks packages unavailable "
+              "with a --no-siblings reason",
+              bundle["siblings"].get("packages", {}).get("available") is False
+              and "--no-siblings" in bundle["siblings"]["packages"].get("reason", ""),
+              "got %s" % bundle.get("siblings"))
+
+
+def test_db_collect():
+    import db_collect
+    policy = _policy.load_policy()
+    cfg = policy["db_source"]
+    fixture = os.path.join(HERE, "fixtures", "db-rows.json")
+    rows, warnings = db_collect.fetch_rows(cfg, rows_json=fixture)
+    selected, skipped, warns = db_collect.build_repo_list(rows, cfg)
+
+    by_slug = {s["slug"]: s for s in selected}
+    skips = {s["slug"]: s["reason"] for s in skipped}
+
+    check("contribute_in_url wins over project_url",
+          by_slug["alpha"]["repo_source_field"] == "contribute_in_url")
+    check("project_url is used when contribute_in_url is empty",
+          by_slug["beta"]["repo_source_field"] == "project_url")
+    check("a URL is found inside description_markdown",
+          by_slug["gamma"]["repo_source_field"] == "description_markdown")
+    check("trailing punctuation is stripped",
+          by_slug["gamma"]["repo_url"].endswith("/acme/gamma"),
+          "got %s" % by_slug["gamma"]["repo_url"])
+    check("a .git suffix does not create a second project",
+          "alpha-dup" not in by_slug)
+    check("a duplicate row is recorded, not dropped",
+          skips.get("alpha-dup", "").startswith("duplicate-of:"))
+    check("a row with no GitHub URL is recorded, not dropped",
+          skips.get("delta") == "no-repo-url")
+    check("a non-GitHub URL is recorded as no-repo-url",
+          skips.get("epsilon") == "no-repo-url")
+    check("every input row is accounted for",
+          len(selected) + len(skipped) == len(rows))
+    check("db_metadata is carried through",
+          by_slug["alpha"]["db_metadata"].get("lifecycle_status") == "active")
+
+
+def test_db_limit_and_pagination_warn():
+    import db_collect
+    policy = _policy.load_policy()
+    cfg = dict(policy["db_source"])
+    fixture = os.path.join(HERE, "fixtures", "db-rows.json")
+    rows, _ = db_collect.fetch_rows(cfg, rows_json=fixture)
+    selected, skipped, warns = db_collect.build_repo_list(rows, cfg, limit=1)
+    check("--db-limit caps the selection", len(selected) == 1)
+    check("--db-limit truncation warns", any("limit" in w.lower() for w in warns))
+
+    cfg_page = dict(cfg)
+    cfg_page["page_size"] = len(rows)
+    _, _, page_warns = db_collect.build_repo_list(rows, cfg_page)
+    check("a page-boundary result warns",
+          any("page" in w.lower() for w in page_warns))
+
+
+def test_db_requires_no_credentials_in_argv():
+    import db_collect
+    policy = _policy.load_policy()
+    cfg = dict(policy["db_source"])
+    try:
+        db_collect.fetch_rows(cfg, rows_json=None, env={})
+        check("no transport configured raises DbError", False, "no exception raised")
+    except db_collect.DbError as e:
+        msg = str(e)
+        check("no transport configured raises DbError", True)
+        check("the error names SUPABASE_URL", "SUPABASE_URL" in msg)
+        check("the error names DATABASE_URL", "DATABASE_URL" in msg)
+
+
+def test_db_psql_credentials_never_reach_argv():
+    """_fetch_psql must pass DATABASE_URL's credentials to the psql child
+    process via its environment (PGUSER/PGPASSWORD/...), never as argv - argv
+    is world-readable via `ps` for the process lifetime, unlike the env of a
+    process you don't have permission to inspect."""
+    import subprocess as _subprocess
+    import db_collect
+    policy = _policy.load_policy()
+    cfg = dict(policy["db_source"])
+
+    captured = {}
+
+    class FakeCompletedProcess:
+        returncode = 0
+        stdout = b"[]"
+        stderr = b""
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["env"] = kwargs.get("env")
+        return FakeCompletedProcess()
+
+    real_run = _subprocess.run
+    db_collect.subprocess.run = fake_run
+    try:
+        env = {"DATABASE_URL": "postgres://testuser:testpass123@testhost:5432/testdb"}
+        db_collect._fetch_psql(cfg, env)
+    finally:
+        db_collect.subprocess.run = real_run
+
+    argv = captured.get("args") or []
+    child_env = captured.get("env") or {}
+    check("psql is invoked (fake_run was reached)", "args" in captured)
+    check("the password is absent from argv",
+          not any("testpass123" in str(a) for a in argv), "argv=%s" % argv)
+    check("the username is absent from argv",
+          not any("testuser" in str(a) for a in argv), "argv=%s" % argv)
+    check("the raw DATABASE_URL is absent from argv",
+          not any("testuser:testpass123" in str(a) for a in argv), "argv=%s" % argv)
+    check("the password is passed via the child process env instead",
+          child_env.get("PGPASSWORD") == "testpass123", "env=%s" % child_env)
+    check("the username is passed via the child process env instead",
+          child_env.get("PGUSER") == "testuser", "env=%s" % child_env)
+    check("host and dbname are also passed via env, not argv",
+          child_env.get("PGHOST") == "testhost" and child_env.get("PGDATABASE") == "testdb",
+          "env=%s" % child_env)
+
+
+def test_db_psql_percent_encoded_credentials_and_query_options():
+    """DATABASE_URL credentials may be percent-encoded (e.g. %40 for a
+    literal @, common in generated Postgres/Supabase secrets) and libpq
+    query-string options like sslmode/connect_timeout must survive into the
+    child env as PGSSLMODE/PGCONNECT_TIMEOUT - previously both were silently
+    dropped/mangled when the URI was parsed instead of passed to psql whole."""
+    import subprocess as _subprocess
+    import db_collect
+    policy = _policy.load_policy()
+    cfg = dict(policy["db_source"])
+
+    captured = {}
+
+    class FakeCompletedProcess:
+        returncode = 0
+        stdout = b"[]"
+        stderr = b""
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["env"] = kwargs.get("env")
+        return FakeCompletedProcess()
+
+    real_run = _subprocess.run
+    db_collect.subprocess.run = fake_run
+    try:
+        env = {"DATABASE_URL":
+               "postgres://us%40er:pa%40ss@testhost:5432/testdb"
+               "?sslmode=require&connect_timeout=10"}
+        db_collect._fetch_psql(cfg, env)
+    finally:
+        db_collect.subprocess.run = real_run
+
+    argv = captured.get("args") or []
+    child_env = captured.get("env") or {}
+    check("psql is invoked (fake_run was reached)", "args" in captured)
+    check("PGUSER is percent-decoded",
+          child_env.get("PGUSER") == "us@er", "env=%s" % child_env)
+    check("PGPASSWORD is percent-decoded",
+          child_env.get("PGPASSWORD") == "pa@ss", "env=%s" % child_env)
+    check("query string sslmode becomes PGSSLMODE",
+          child_env.get("PGSSLMODE") == "require", "env=%s" % child_env)
+    check("query string connect_timeout becomes PGCONNECT_TIMEOUT",
+          child_env.get("PGCONNECT_TIMEOUT") == "10", "env=%s" % child_env)
+    check("the decoded username is absent from argv",
+          not any("us@er" in str(a) for a in argv), "argv=%s" % argv)
+    check("the decoded password is absent from argv",
+          not any("pa@ss" in str(a) for a in argv), "argv=%s" % argv)
+    check("the raw percent-encoded password is absent from argv",
+          not any("pa%40ss" in str(a) for a in argv), "argv=%s" % argv)
+    check("the raw DATABASE_URL is absent from argv",
+          not any("us%40er:pa%40ss" in str(a) for a in argv), "argv=%s" % argv)
+
+
+def test_db_config_rejects_missing_column():
+    import db_collect
+    cfg = {"table": "projects", "slug_column": "nope", "name_column": "name",
+           "repo_url_columns": ["project_url"], "metadata_columns": [],
+           "filter": None, "page_size": 1000}
+    rows = [{"slug": "a", "name": "A", "project_url": "https://github.com/x/y"}]
+    try:
+        db_collect.build_repo_list(rows, cfg)
+        check("a config naming a missing column fails loudly", False, "no exception")
+    except db_collect.DbError:
+        check("a config naming a missing column fails loudly", True)
+
+
+def test_db_attach_metadata():
+    import tempfile
+    import json as _json
+    import db_collect
+    with tempfile.TemporaryDirectory() as base:
+        ev = os.path.join(base, "evidence")
+        os.makedirs(ev)
+        with open(os.path.join(ev, "alpha.json"), "w", encoding="utf-8") as f:
+            _json.dump({"project_slug": "alpha", "db_metadata": {}}, f)
+        selected = [{"slug": "alpha", "name": "Alpha", "repo_url": "https://github.com/acme/alpha",
+                    "repo_source_field": "contribute_in_url",
+                    "db_metadata": {"lifecycle_status": "active"}}]
+        db_collect.attach_metadata(ev, selected)
+        with open(os.path.join(ev, "alpha.json"), "r", encoding="utf-8") as f:
+            bundle = _json.load(f)
+        check("attach_metadata merges name into db_metadata",
+              bundle["db_metadata"]["name"] == "Alpha")
+        check("attach_metadata merges repo_source_field into db_metadata",
+              bundle["db_metadata"]["repo_source_field"] == "contribute_in_url")
+        check("attach_metadata preserves the original metadata columns",
+              bundle["db_metadata"]["lifecycle_status"] == "active")
+
+
+def test_db_attach_metadata_skips_missing_evidence():
+    import tempfile
+    import db_collect
+    with tempfile.TemporaryDirectory() as base:
+        ev = os.path.join(base, "evidence")
+        os.makedirs(ev)
+        selected = [{"slug": "ghost", "name": "Ghost", "repo_url": "https://github.com/acme/ghost",
+                    "repo_source_field": "project_url", "db_metadata": {}}]
+        db_collect.attach_metadata(ev, selected)  # must not raise
+        check("attach_metadata does not create a file for a project with no evidence",
+              not os.path.isfile(os.path.join(ev, "ghost.json")))
+
+
+def test_validator():
+    import _schemas
+    ok = {"type": "object", "additionalProperties": False,
+          "required": ["a"],
+          "properties": {"a": {"type": "integer", "minimum": 1, "maximum": 5},
+                         "b": {"type": "string", "enum": ["x", "y"]},
+                         "c": {"type": "array", "items": {"type": "string"}}}}
+    check("valid object passes", _schemas.validate({"a": 3}, ok) == [])
+    check("missing required field is caught", _schemas.validate({}, ok) != [])
+    check("wrong type is caught", _schemas.validate({"a": "3"}, ok) != [])
+    check("out-of-range integer is caught", _schemas.validate({"a": 9}, ok) != [])
+    check("bad enum value is caught", _schemas.validate({"a": 1, "b": "z"}, ok) != [])
+    check("unknown property is caught",
+          _schemas.validate({"a": 1, "zzz": 1}, ok) != [])
+    check("bad array item type is caught",
+          _schemas.validate({"a": 1, "c": [1]}, ok) != [])
+    check("a boolean is not an integer",
+          _schemas.validate({"a": True}, ok) != [])
+
+
+def test_schemas_shape():
+    import _schemas
+    a = _schemas.ANALYZE_SCHEMA["properties"]
+    for f in ("maturity", "production_readiness", "code_organization", "maintainability"):
+        check("analyze schema has %s.score 1-5" % f,
+              a[f]["properties"]["score"]["minimum"] == 1
+              and a[f]["properties"]["score"]["maximum"] == 5)
+    check("analyze schema has no promo fields",
+          not set(("viability", "domain_tags", "merge_potential", "diffusion",
+                   "one_line_pitch", "overall_recommendation")) & set(a))
+    s = _schemas.SECURITY_SCHEMA["properties"]
+    check("security schema enumerates finding status",
+          set(s["findings"]["items"]["properties"]["status"]["enum"])
+          == set(("open", "partial", "resolved", "new")))
+    check("security findings require file and line",
+          set(("file", "line")) <= set(s["findings"]["items"]["required"]))
+    check("security schema has a risk enum including none",
+          "none" in s["risk"]["enum"])
+
+
+def test_build_tasks():
+    import tempfile
+    import json as _json
+    import build_tasks
+    policy = _policy.load_policy()
+    with tempfile.TemporaryDirectory() as base:
+        ev = os.path.join(base, "evidence")
+        os.makedirs(ev)
+        for slug in ("alpha", "beta"):
+            with open(os.path.join(ev, slug + ".json"), "w", encoding="utf-8") as f:
+                _json.dump({"project_slug": slug, "path": "/tmp/" + slug,
+                            "remote_url": "https://github.com/acme/" + slug}, f)
+        out = os.path.join(base, "agents")
+        manifest = build_tasks.build(ev, policy, out)
+        ids = sorted(t["id"] for t in manifest["tasks"])
+        check("one analyze and one security task per project",
+              ids == ["analyze:alpha", "analyze:beta", "security:alpha", "security:beta"],
+              "got %s" % ids)
+        by_id = {t["id"]: t for t in manifest["tasks"]}
+        check("analyze uses the read-only Explore agent",
+              by_id["analyze:alpha"]["agent_type"] == "Explore")
+        check("security uses general-purpose",
+              by_id["security:alpha"]["agent_type"] == "general-purpose")
+        check("both stages use sonnet",
+              by_id["analyze:alpha"]["model"] == "sonnet"
+              and by_id["security:alpha"]["model"] == "sonnet")
+        check("every task names an output path",
+              all(t["output_path"].endswith(".json") for t in manifest["tasks"]))
+        check("every task carries its schema",
+              all("properties" in t["schema"] for t in manifest["tasks"]))
+        check("every prompt inlines the evidence path",
+              all("evidence" in t["prompt"] for t in manifest["tasks"]))
+        check("manifest states max_parallel", manifest["max_parallel"] >= 1)
+
+
+def test_build_tasks_inlines_prior_findings():
+    import tempfile
+    import json as _json
+    import build_tasks
+    policy = _policy.load_policy()
+    with tempfile.TemporaryDirectory() as base:
+        ev = os.path.join(base, "evidence")
+        os.makedirs(ev)
+        with open(os.path.join(ev, "alpha.json"), "w", encoding="utf-8") as f:
+            _json.dump({"project_slug": "alpha", "path": "/tmp/alpha"}, f)
+        prior = {"alpha": {"risk": "high", "auditedAt": "2026-01-01",
+                           "findings": [{"severity": "high", "title": "No auth on POST /items",
+                                         "status": "open"}]}}
+        m = build_tasks.build(ev, policy, os.path.join(base, "agents"), prior_audit=prior)
+        sec = [t for t in m["tasks"] if t["id"] == "security:alpha"][0]
+        check("prior findings are inlined into the security prompt",
+              "No auth on POST /items" in sec["prompt"])
+        check("the prompt forbids dropping a prior finding",
+              "resolved" in sec["prompt"] and "do not drop" in sec["prompt"].lower())
+        ana = [t for t in m["tasks"] if t["id"] == "analyze:alpha"][0]
+        check("the analyze prompt never sees security findings",
+              "No auth on POST /items" not in ana["prompt"])
+
+
+def test_build_tasks_applies_profile_instructions():
+    import tempfile
+    import json as _json
+    import build_tasks
+    policy = _policy.load_policy("genericsuite")
+    with tempfile.TemporaryDirectory() as base:
+        ev = os.path.join(base, "evidence")
+        os.makedirs(ev)
+        with open(os.path.join(ev, "alpha.json"), "w", encoding="utf-8") as f:
+            _json.dump({"project_slug": "alpha", "path": "/tmp/alpha"}, f)
+        m = build_tasks.build(ev, policy, os.path.join(base, "agents"))
+        sec = [t for t in m["tasks"] if t["id"] == "security:alpha"][0]
+        check("profile instructions reach the security prompt", "scrypt" in sec["prompt"])
+
+
+def _valid_analysis(pr=4, mat=4, org=4, boiler="real"):
+    return {"summary": "s", "project_type": "web app",
+            "stack": {"frontend": [], "backend": [], "database": [],
+                      "infra_deploy": [], "languages": ["Python"]},
+            "architecture": {"pattern": "mvc", "uses_orm": True,
+                             "orm_or_db_layer": "sqlalchemy", "api_design": "rest",
+                             "separation_of_concerns": "good"},
+            "code_organization": {"score": org, "reasoning": "r",
+                                  "directory_structure": "d", "naming_quality": "n",
+                                  "documentation_quality": "q"},
+            "production_readiness": {"score": pr, "reasoning": "r", "has_auth": True,
+                                     "has_error_handling": True, "has_logging": True,
+                                     "has_env_config": True, "has_deploy_config": True,
+                                     "secrets_handling": "env"},
+            "maturity": {"score": mat, "reasoning": "r", "has_readme": True,
+                         "has_tests": True, "has_ci": True,
+                         "is_real_or_boilerplate": boiler},
+            "maintainability": {"score": 4, "reasoning": "r"},
+            "weaknesses": [], "red_flags": []}
+
+
+def _valid_security(risk="none", findings=None):
+    return {"risk": risk, "findings": findings or [], "issueState": "none",
+            "issueUrl": None, "reauditNote": "n"}
+
+
+def _finding(sev, title, status):
+    return {"severity": sev, "title": title, "status": status, "file": "a.py",
+            "line": 1, "evidence": "e", "remediation": "r"}
+
+
+def _merge_fixture(base, analyses, securities):
+    import json as _json
+    ev = os.path.join(base, "evidence")
+    ag = os.path.join(base, "agents", "out")
+    os.makedirs(ev)
+    os.makedirs(ag)
+    for slug in set(list(analyses) + list(securities)):
+        with open(os.path.join(ev, slug + ".json"), "w", encoding="utf-8") as f:
+            _json.dump({"project_slug": slug, "path": "/tmp/" + slug,
+                        "size": {"code_loc": 100, "primary_language": "Python"},
+                        "siblings": {}}, f)
+    for slug, obj in analyses.items():
+        if obj is None:
+            continue
+        with open(os.path.join(ag, slug + ".analyze.json"), "w", encoding="utf-8") as f:
+            _json.dump(obj, f)
+    for slug, obj in securities.items():
+        if obj is None:
+            continue
+        with open(os.path.join(ag, slug + ".security.json"), "w", encoding="utf-8") as f:
+            _json.dump(obj, f)
+    return ev, os.path.join(base, "agents")
+
+
+def test_verdict_derivation():
+    import tempfile
+    import merge_insights
+    policy = _policy.load_policy()
+    with tempfile.TemporaryDirectory() as base:
+        ev, ag = _merge_fixture(base,
+            {"ready": _valid_analysis(4, 4, 4),
+             "work": _valid_analysis(3, 3, 3),
+             "notready": _valid_analysis(1, 1, 1, boiler="boilerplate"),
+             "risky": _valid_analysis(5, 5, 5)},
+            {"ready": _valid_security("none"),
+             "work": _valid_security("medium", [_finding("medium", "m", "open")]),
+             "notready": _valid_security("none"),
+             "risky": _valid_security("critical", [_finding("critical", "c", "open")])})
+        res = merge_insights.merge(ev, ag, policy)
+        by = {p["project_slug"]: p for p in res["projects"]}
+        check("high scores with no findings are production-ready",
+              by["ready"]["readiness"] == "production-ready")
+        check("middling scores are needs-work", by["work"]["readiness"] == "needs-work")
+        check("skeleton scores are not-ready", by["notready"]["readiness"] == "not-ready")
+        check("a critical open finding disqualifies production-ready",
+              by["risky"]["readiness"] != "production-ready",
+              "got %s" % by["risky"]["readiness"])
+        check("security_risk reflects the worst open finding",
+              by["risky"]["security_risk"] == "critical")
+        check("no findings means risk none", by["ready"]["security_risk"] == "none")
+
+
+def test_missing_and_invalid_agent_output():
+    import tempfile
+    import merge_insights
+    policy = _policy.load_policy()
+    with tempfile.TemporaryDirectory() as base:
+        ev, ag = _merge_fixture(base,
+            {"missing": None, "bad": {"summary": "only this key"},
+             "good": _valid_analysis()},
+            {"missing": _valid_security(), "bad": _valid_security(),
+             "good": _valid_security()})
+        res = merge_insights.merge(ev, ag, policy)
+        by = {p["project_slug"]: p for p in res["projects"]}
+        check("missing analyze output yields unknown", by["missing"]["readiness"] == "unknown")
+        check("invalid analyze output yields unknown", by["bad"]["readiness"] == "unknown")
+        check("a project with no agent output is still present, not dropped",
+              set(("missing", "bad", "good")) <= set(by))
+        check("missing output appears in blind spots",
+              any("missing" in b for b in res["blind_spots"]))
+        check("invalid output appears in blind spots",
+              any("bad" in b for b in res["blind_spots"]))
+        rejected = os.path.join(base, "agents", "rejected", "bad.analyze.json")
+        check("rejected agent output is preserved for inspection",
+              os.path.isfile(rejected))
+
+
+def test_missing_security_output_is_unknown_risk():
+    import tempfile
+    import merge_insights
+    policy = _policy.load_policy()
+    with tempfile.TemporaryDirectory() as base:
+        ev, ag = _merge_fixture(base, {"a": _valid_analysis()}, {"a": None})
+        res = merge_insights.merge(ev, ag, policy)
+        p = res["projects"][0]
+        check("missing security output does not silently mean risk none",
+              p["security_risk"] != "none", "got %s" % p["security_risk"])
+        check("missing security output blocks the project", p["blocked"] is True)
+
+
+def test_reaudit_carries_findings_forward():
+    import tempfile
+    import merge_insights
+    policy = _policy.load_policy()
+    prior = {"a": {"risk": "high", "auditedAt": "2026-01-01",
+                   "findings": [{"severity": "high", "title": "F1", "status": "open"},
+                                {"severity": "low", "title": "F2", "status": "open"}]}}
+    with tempfile.TemporaryDirectory() as base:
+        # The agent resolves F1 and forgets F2 entirely.
+        ev, ag = _merge_fixture(base, {"a": _valid_analysis()},
+            {"a": _valid_security("none", [_finding("high", "F1", "resolved")])})
+        res = merge_insights.merge(ev, ag, policy, prior_audit=prior)
+        titles = {f["title"]: f for f in res["audit"]["a"]["findings"]}
+        check("a resolved prior finding is kept, not dropped",
+              titles["F1"]["status"] == "resolved")
+        check("a prior finding the agent omitted is re-added",
+              "F2" in titles, "got %s" % sorted(titles))
+        check("a re-added finding stays open, never assumed fixed",
+              titles.get("F2", {}).get("status") == "open")
+        check("dropping a prior finding is recorded as a blind spot",
+              any("F2" in b for b in res["blind_spots"]))
+        check("risk reflects the still-open F2, not the resolved F1",
+              res["audit"]["a"]["risk"] == "low",
+              "got %s" % res["audit"]["a"]["risk"])
+        check("previousRisk is stamped", res["audit"]["a"]["previousRisk"] == "high")
+        check("auditedAt is carried forward", res["audit"]["a"]["auditedAt"] == "2026-01-01")
+        check("reauditedAt is stamped", bool(res["audit"]["a"].get("reauditedAt")))
+
+
+def test_merge_record_carries_reaudit_fields():
+    import tempfile
+    import merge_insights
+    policy = _policy.load_policy()
+    prior = {"a": {"risk": "high", "auditedAt": "2026-01-01",
+                   "findings": [{"severity": "high", "title": "F1", "status": "open"}]}}
+    with tempfile.TemporaryDirectory() as base:
+        # Same re-audit shape as test_reaudit_carries_findings_forward, but this
+        # asserts the project RECORD (insights.json / flat_rows source), not
+        # just res["audit"] (security-audit.json).
+        ev, ag = _merge_fixture(base, {"a": _valid_analysis()},
+            {"a": _valid_security("none", [_finding("high", "F1", "resolved")])})
+        res = merge_insights.merge(ev, ag, policy, prior_audit=prior)
+        p = res["projects"][0]
+        check("project record carries previous_risk from the prior audit",
+              p.get("previous_risk") == "high", "got %s" % p.get("previous_risk"))
+        check("project record carries audited_at from the prior audit",
+              p.get("audited_at") == "2026-01-01", "got %s" % p.get("audited_at"))
+        check("project record stamps reaudited_at on a re-audit",
+              bool(p.get("reaudited_at")))
+
+
+def test_resolved_findings_do_not_raise_risk():
+    import merge_insights
+    policy = _policy.load_policy()
+    findings = [_finding("critical", "old", "resolved"), _finding("low", "new", "open")]
+    check("resolved findings never contribute to risk",
+          merge_insights.worst_open_severity(findings, policy) == "low")
+    check("all-resolved means risk none",
+          merge_insights.worst_open_severity(
+              [_finding("critical", "old", "resolved")], policy) == "none")
+
+
+def test_merge_no_siblings_sentinel_becomes_blind_spot():
+    """Final-review Fix 2, the other half: given the sentinel shape
+    collect_signals.mark_siblings_skipped() now writes, merge_insights.py's
+    EXISTING blind-spot loop (unchanged by this fix - it already checks
+    res.get("available", True)) must surface it. No changes to merge_insights
+    are needed for this to pass; this test is what proves that."""
+    import tempfile
+    import json as _json
+    import merge_insights
+    with tempfile.TemporaryDirectory() as base:
+        ev = os.path.join(base, "evidence")
+        ag = os.path.join(base, "agents")
+        os.makedirs(ev)
+        os.makedirs(os.path.join(ag, "out"))
+        with open(os.path.join(ev, "alpha.json"), "w", encoding="utf-8") as f:
+            _json.dump({"project_slug": "alpha", "path": "/tmp/alpha",
+                        "size": {"code_loc": 10, "primary_language": "Python"},
+                        "siblings": {
+                            "docker": {"available": False,
+                                       "reason": "skipped by --no-siblings", "findings": []},
+                            "packages": {"available": False,
+                                         "reason": "skipped by --no-siblings", "findings": []}}}, f)
+        policy = _policy.load_policy()
+        res = merge_insights.merge(ev, ag, policy)
+        check("a --no-siblings docker sentinel produces a blind spot",
+              any("docker scanner did not run" in b and "--no-siblings" in b
+                  for b in res["blind_spots"]),
+              "got %s" % res["blind_spots"])
+        check("a --no-siblings packages sentinel produces a blind spot",
+              any("packages scanner did not run" in b and "--no-siblings" in b
+                  for b in res["blind_spots"]),
+              "got %s" % res["blind_spots"])
+
+
+def test_merge_corpus_blind_spots():
+    import tempfile
+    import json as _json
+    import merge_insights
+    with tempfile.TemporaryDirectory() as base:
+        corpus_path = os.path.join(base, "corpus.json")
+        with open(corpus_path, "w", encoding="utf-8") as f:
+            _json.dump({"totals": {"enumerated": 5, "selected": 5, "cloned": 3,
+                                    "failed": 2, "skipped": 0},
+                        "warnings": ["enumeration truncated at 100 repos"]}, f)
+        spots = merge_insights.corpus_blind_spots(corpus_path)
+        check("corpus.json's totals.failed surfaces in blind spots",
+              any("2" in s and "failed" in s for s in spots), "got %s" % spots)
+        check("corpus.json's warnings surface in blind spots",
+              any("enumeration truncated at 100 repos" in s for s in spots),
+              "got %s" % spots)
+
+        zero_path = os.path.join(base, "corpus-clean.json")
+        with open(zero_path, "w", encoding="utf-8") as f:
+            _json.dump({"totals": {"failed": 0}, "warnings": []}, f)
+        check("a corpus with no failures and no warnings adds no blind spots",
+              merge_insights.corpus_blind_spots(zero_path) == [])
+
+    check("a nonexistent corpus path yields no blind spots, no crash",
+          merge_insights.corpus_blind_spots("/nonexistent/corpus.json") == [])
+    check("a None corpus path yields no blind spots, no crash",
+          merge_insights.corpus_blind_spots(None) == [])
+
+
+def test_merge_discovery_blind_spots():
+    import tempfile
+    import json as _json
+    import merge_insights
+    with tempfile.TemporaryDirectory() as base:
+        disc_path = os.path.join(base, "discovery.json")
+        with open(disc_path, "w", encoding="utf-8") as f:
+            _json.dump({"unreadable": [], "truncated": "max_depth=3 reached",
+                        "pruned": 0}, f)
+        spots = merge_insights.discovery_blind_spots(disc_path)
+        check("discovery.json's truncated field surfaces in blind spots",
+              any("max_depth=3 reached" in s for s in spots), "got %s" % spots)
+
+        clean_path = os.path.join(base, "discovery-clean.json")
+        with open(clean_path, "w", encoding="utf-8") as f:
+            _json.dump({"unreadable": [], "truncated": None, "pruned": 4}, f)
+        check("discovery stats with truncated=null add no blind spots",
+              merge_insights.discovery_blind_spots(clean_path) == [])
+
+    check("a nonexistent discovery-stats path yields no blind spots, no crash",
+          merge_insights.discovery_blind_spots("/nonexistent/discovery.json") == [])
+    check("a None discovery-stats path yields no blind spots, no crash",
+          merge_insights.discovery_blind_spots(None) == [])
+
+
+def test_merge_main_wires_corpus_and_discovery_into_insights_json():
+    import tempfile
+    import json as _json
+    import merge_insights
+    with tempfile.TemporaryDirectory() as base:
+        ev, ag = _merge_fixture(base, {"a": _valid_analysis()}, {"a": _valid_security()})
+        out = os.path.join(base, "out")
+        corpus_path = os.path.join(base, "corpus.json")
+        with open(corpus_path, "w", encoding="utf-8") as f:
+            _json.dump({"totals": {"failed": 3}, "warnings": []}, f)
+        disc_path = os.path.join(base, "discovery.json")
+        with open(disc_path, "w", encoding="utf-8") as f:
+            _json.dump({"unreadable": [], "truncated": "--limit=10 hit",
+                        "pruned": 0}, f)
+        rc = merge_insights.main(["--evidence", ev, "--agents", ag, "--out", out,
+                                   "--profile", "generic",
+                                   "--corpus", corpus_path,
+                                   "--discovery-stats", disc_path])
+        check("merge_insights.main succeeds with --corpus/--discovery-stats", rc == 0)
+        with open(os.path.join(out, "insights.json"), "r", encoding="utf-8") as f:
+            insights = _json.load(f)
+        check("corpus failure blind spot reaches insights.json",
+              any("3 repo(s) failed" in b for b in insights["blind_spots"]),
+              "got %s" % insights["blind_spots"])
+        check("discovery truncation blind spot reaches insights.json",
+              any("--limit=10 hit" in b for b in insights["blind_spots"]),
+              "got %s" % insights["blind_spots"])
+
+
+def test_merge_main_corpus_and_discovery_flags_are_optional():
+    import tempfile
+    import json as _json
+    import merge_insights
+    with tempfile.TemporaryDirectory() as base:
+        ev, ag = _merge_fixture(base, {"a": _valid_analysis()}, {"a": _valid_security()})
+        out = os.path.join(base, "out")
+        rc = merge_insights.main(["--evidence", ev, "--agents", ag, "--out", out,
+                                   "--profile", "generic"])
+        check("merge_insights.main succeeds without --corpus/--discovery-stats",
+              rc == 0)
+        with open(os.path.join(out, "insights.json"), "r", encoding="utf-8") as f:
+            insights = _json.load(f)
+        check("omitting --corpus/--discovery-stats adds no spurious blind spots",
+              not any(b.startswith("corpus:") or b.startswith("discovery:")
+                      for b in insights["blind_spots"]),
+              "got %s" % insights["blind_spots"])
+
+
+def _insights_fixture():
+    return {"schema_version": 1, "generated_at": "2026-08-08", "profile": "generic",
+            "blind_spots": ["beta: analyze output unusable - no output file"],
+            "projects": [
+                {"project_slug": "alpha", "name": "Alpha", "path": "/tmp/alpha",
+                 "branch": "main", "head_sha": "abc123", "repo_url": "https://github.com/acme/alpha",
+                 "repo_source_field": None, "signals": {"code_loc": 900, "primary_language": "Python"},
+                 "db_metadata": {}, "siblings": {}, "walk_stats": {}, "secrets": [],
+                 "analysis": _valid_analysis(), "readiness": "production-ready",
+                 "readiness_reason": "r", "security_risk": "low", "blocked": False,
+                 "findings": [_finding("low", "Verbose errors", "open")]},
+                {"project_slug": "beta", "name": "Beta", "path": "/tmp/beta",
+                 "branch": "main", "head_sha": "def456", "repo_url": None,
+                 "repo_source_field": None, "signals": {}, "db_metadata": {},
+                 "siblings": {}, "walk_stats": {}, "secrets": [], "analysis": None,
+                 "readiness": "unknown", "readiness_reason": "u",
+                 "security_risk": "unknown", "blocked": True, "findings": []}]}
+
+
+def test_report_generation():
+    import tempfile
+    import gen_report
+    policy = _policy.load_policy()
+    ins = _insights_fixture()
+    md = gen_report.render_markdown(ins, policy,
+                                    "./run.sh --db --db-url postgres://u:pw@h/d")
+
+    check("report states the scan command", "Scan command" in md)
+    check("the scan command is redacted in the report", "pw@h" not in md)
+    check("report names every project analyzed",
+          "alpha" in md and "beta" in md)
+    check("report states head SHAs", "abc123" in md and "def456" in md)
+    check("report always has a blind-spot section", "Blind spots" in md)
+    check("report carries the blind spot through", "analyze output unusable" in md)
+    check("report has a project matrix", "Project matrix" in md)
+    check("per-project detail shows a Blocked indicator", "**Blocked:**" in md)
+    alpha_section = md.split("### alpha")[1].split("### beta")[0]
+    check("Blocked indicator appears for a project with analysis present, "
+          "not just the analysis-missing branch",
+          "**Blocked:**" in alpha_section)
+
+    for rule in policy["readiness_rules"]:
+        check("legend line for %s comes from policy" % rule["tier"],
+              rule["reason"][:40] in md, "missing: %s" % rule["reason"][:40])
+    for word in ("P0", "P1", "P2", "spotlight", "diffusion", "promote"):
+        check("report contains no %r vocabulary from another scanner" % word,
+              word not in md)
+
+
+def test_flat_projection():
+    import gen_report
+    policy = _policy.load_policy()
+    rows = gen_report.flat_rows(_insights_fixture(), policy)
+    check("one row per project, including unscored ones", len(rows) == 2)
+    check("row columns match table_columns exactly and in order",
+          all(list(r.keys()) == policy["table_columns"] for r in rows))
+    by = {r["project_slug"]: r for r in rows}
+    check("an unknown project still has a row", "beta" in by)
+    check("an unknown project is marked blocked", by["beta"]["blocked"] is True)
+    check("unscored fields are null, not zero", by["beta"]["maturity_score"] is None)
+    check("scores are carried from the analysis", by["alpha"]["maturity_score"] == 4)
+    check("open findings are counted", by["alpha"]["open_findings"] == 1)
+
+
+def test_csv_and_sarif():
+    import tempfile
+    import csv as _csv
+    import json as _json
+    import gen_report
+    policy = _policy.load_policy()
+    ins = _insights_fixture()
+    with tempfile.TemporaryDirectory() as out:
+        gen_report.write_all(ins, policy, out, "./run.sh --root .", digest=None)
+        with open(os.path.join(out, "insights-table.csv"), "r", encoding="utf-8") as f:
+            rows = list(_csv.DictReader(f))
+        check("CSV has one row per project", len(rows) == 2)
+        check("CSV header matches table_columns",
+              list(rows[0].keys()) == policy["table_columns"])
+        with open(os.path.join(out, "findings.sarif"), "r", encoding="utf-8") as f:
+            sarif = _json.load(f)
+        check("SARIF has the required version", sarif["version"] == "2.1.0")
+        check("SARIF carries one result per finding",
+              len(sarif["runs"][0]["results"]) == 1)
+        check("report, table json, table csv and sarif all written",
+              all(os.path.isfile(os.path.join(out, n)) for n in
+                  ("WEAKNESS-REPORT.md", "insights-table.json",
+                   "insights-table.csv", "findings.sarif")))
+
+
+def test_report_without_digest_says_so():
+    import gen_report
+    policy = _policy.load_policy()
+    md = gen_report.render_markdown(_insights_fixture(), policy, "./run.sh", digest=None)
+    check("a missing rollup is stated, not silently omitted",
+          "rollup" in md.lower())
+
+
+def main():
+    print("Policy and profiles")
+    test_policy_loads()
+    print("\nRedaction")
+    test_redaction()
+    print("\nRegistration")
+    test_marketplace_registration()
+
+    print("\nDiscovery")
+    test_discovery()
+    test_discovery_symlink_escape()
+
+    print("\nSecrets")
+    test_secrets()
+    test_secrets_untracked_env_is_not_confirmed()
+
+    print("\nSignals")
+    test_collect_signals()
+    test_collect_signals_writes_nothing_into_projects()
+
+    print("\nSibling scanners")
+    test_siblings_absent_is_visible()
+    test_siblings_attach()
+    test_siblings_stale_findings_not_reused_after_crash()
+    test_mark_siblings_skipped_overwrites_empty_siblings()
+    test_collect_signals_main_no_siblings_writes_sentinels()
+
+    print("\nDB collector (optional mode, no live database)")
+    test_db_collect()
+    test_db_limit_and_pagination_warn()
+    test_db_requires_no_credentials_in_argv()
+    test_db_psql_credentials_never_reach_argv()
+    test_db_psql_percent_encoded_credentials_and_query_options()
+    test_db_config_rejects_missing_column()
+    test_db_attach_metadata()
+    test_db_attach_metadata_skips_missing_evidence()
+
+    print("\nSchemas and task manifest")
+    test_validator()
+    test_schemas_shape()
+    test_build_tasks()
+    test_build_tasks_inlines_prior_findings()
+    test_build_tasks_applies_profile_instructions()
+
+    print("\nMerge, verdicts and re-audit")
+    test_verdict_derivation()
+    test_missing_and_invalid_agent_output()
+    test_missing_security_output_is_unknown_risk()
+    test_reaudit_carries_findings_forward()
+    test_merge_record_carries_reaudit_fields()
+    test_resolved_findings_do_not_raise_risk()
+    test_merge_no_siblings_sentinel_becomes_blind_spot()
+    test_merge_corpus_blind_spots()
+    test_merge_discovery_blind_spots()
+    test_merge_main_wires_corpus_and_discovery_into_insights_json()
+    test_merge_main_corpus_and_discovery_flags_are_optional()
+
+    print("\nReport, projection, CSV and SARIF")
+    test_report_generation()
+    test_flat_projection()
+    test_csv_and_sarif()
+    test_report_without_digest_says_so()
+
+    print("\nDriver and gate")
+    test_driver_bash32_safe()
+    test_driver_merge_phase_wires_corpus_and_discovery_flags()
+    test_driver_corpus_json_defined_before_merge_phase_under_set_u()
+    test_driver_projects_arg_source_uses_newline_join_and_ifs_guard()
+    test_driver_projects_list_only_preserves_space_in_path()
+    test_driver_projects_with_space_scans_correct_directory()
+    test_driver_persists_and_recombines_scan_command_across_phases_source()
+    test_driver_report_scan_command_shows_both_phase_invocations()
+    test_driver_no_input_exits_2()
+    test_gate_exit_codes()
+    test_driver_blocked_computation_exits_2_on_bad_insights()
+
+    print("\nDocumentation")
+    test_skill_md_and_references()
+    test_no_team_vocabulary_anywhere()
+
+    passed = sum(1 for _, ok in results if ok)
+    total = len(results)
+    print("\n%d/%d assertions passed" % (passed, total))
+    if skipped:
+        print("%d skipped (NOT counted as passes)" % len(skipped))
+    if passed != total:
+        print("\n%sSELF-TEST FAILED - do not trust a scan from this code.%s" % (RED, RESET))
+        return 1
+    print("\n%sAll assertions passed.%s" % (GREEN, RESET))
+    return 0
+
+
+def test_driver_bash32_safe():
+    path = os.path.join(SCRIPTS, "run_weakness_analysis.sh")
+    with open(path, "r", encoding="utf-8") as f:
+        src = f.read()
+    for bad, why in (("declare -A", "associative arrays need bash 4"),
+                     ("mapfile", "needs bash 4"),
+                     ("readarray", "needs bash 4"),
+                     ("${!", "indirect expansion is bash 4 in this form")):
+        check("driver avoids %s (%s)" % (bad, why), bad not in src)
+    check("driver does not use set -e (it masks pipeline stage failures)",
+          "set -e" not in src.replace("set -eu", "").replace("set -euo", ""))
+    check("driver captures the invocation before parsing",
+          "WEAKNESS_INVOKED_CMD" in src)
+    check("driver runs the self-test", "selftest.py" in src)
+
+
+def test_driver_merge_phase_wires_corpus_and_discovery_flags():
+    path = os.path.join(SCRIPTS, "run_weakness_analysis.sh")
+    with open(path, "r", encoding="utf-8") as f:
+        src = f.read()
+    check("driver's merge phase conditionally passes --corpus",
+          '--corpus $CORPUS_JSON' in src)
+    check("driver's merge phase conditionally passes --discovery-stats",
+          '--discovery-stats $WORK/discovery.json' in src)
+    check("the merge_insights.py invocation forwards CORPUS_ARG and DISC_ARG",
+          "$CORPUS_ARG $DISC_ARG" in src)
+
+
+def test_driver_corpus_json_defined_before_merge_phase_under_set_u():
+    # CORPUS_JSON must be assigned before the `if [ "$PHASE" = "collect" ]`
+    # branch (not only inside it), because a `--phase merge` invocation is a
+    # separate script run that never executes that branch. Under `set -u`,
+    # referencing an unset CORPUS_JSON in `[ -f "$CORPUS_JSON" ]` would abort
+    # the whole run with "unbound variable" instead of degrading gracefully.
+    path = os.path.join(SCRIPTS, "run_weakness_analysis.sh")
+    with open(path, "r", encoding="utf-8") as f:
+        src = f.read()
+    work_idx = src.index('WORK="$OUT/.work"')
+    # Deliberately the collect-BLOCK header ("; then"), not the earlier
+    # "no input mode given" guard at the top of the file, which shares the
+    # `if [ "$PHASE" = "collect" ]` prefix but is a different if-statement.
+    collect_idx = src.index('if [ "$PHASE" = "collect" ]; then')
+    default_idx = src.index('CORPUS_JSON="$WORK/corpus.json"')
+    check("CORPUS_JSON is defaulted after WORK and before the collect-phase "
+          "branch, so --phase merge never reads it unset under set -u",
+          work_idx < default_idx < collect_idx,
+          "work=%d default=%d collect=%d" % (work_idx, default_idx, collect_idx))
+
+
+def test_driver_projects_arg_source_uses_newline_join_and_ifs_guard():
+    """Final-review Fix 1 (CRITICAL), source-level backstop: a project path
+    containing a space must never be word-split. Guards against a regression
+    reintroducing `PROJECTS="$PROJECTS $1"` (space-joined) or an unquoted
+    `--local $FOUND`/`--local $PROJECTS` expansion without the IFS='\\n';
+    set -f guard, even if the live-invocation tests below happen to pass by
+    luck (e.g. no spaces in the machine's default $TMPDIR)."""
+    path = os.path.join(SCRIPTS, "run_weakness_analysis.sh")
+    with open(path, "r", encoding="utf-8") as f:
+        src = f.read()
+    check("the --projects accumulator no longer space-joins fragments",
+          'PROJECTS="$PROJECTS $1"' not in src)
+    check("--list-only for --projects mode quotes \"$PROJECTS\" (one intact "
+          "value), not a bare unquoted expansion",
+          'printf \'%s\\n\' "$PROJECTS"' in src)
+    check("--local $FOUND and --local $PROJECTS are both preceded by an "
+          "IFS='\\n'; set -f guard (newline-only splitting, no globbing) and "
+          "restored afterwards",
+          src.count('OLD_IFS="$IFS"') == 2
+          and src.count('set +f; IFS="$OLD_IFS"') == 2,
+          'OLD_IFS= count=%d, restore count=%d'
+          % (src.count('OLD_IFS="$IFS"'), src.count('set +f; IFS="$OLD_IFS"')))
+
+
+def test_driver_projects_list_only_preserves_space_in_path():
+    """Final-review Fix 1, fast live check: --list-only for --projects mode
+    exits before touching build_corpus.py, so this exercises just the
+    arg-accumulation fix (newline join) without needing repo-corpus."""
+    import subprocess
+    import tempfile
+    path = os.path.join(SCRIPTS, "run_weakness_analysis.sh")
+    with tempfile.TemporaryDirectory() as base:
+        proj = os.path.join(base, "my project")
+        os.makedirs(proj)
+        env = dict(os.environ, WEAKNESS_SKIP_SELFTEST="1")
+        proc = subprocess.run(
+            ["bash", path, "--projects", proj, "--list-only",
+             "--out", os.path.join(base, "out")],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=60)
+        out = proc.stdout.decode("utf-8", "replace")
+        lines = [l for l in out.splitlines() if l.strip()]
+        check("--list-only with a spaced --projects path exits 0",
+              proc.returncode == 0,
+              "got %d, stderr=%s" % (proc.returncode,
+                                     proc.stderr.decode("utf-8", "replace")))
+        # stdout also carries the "### Step N: ..." progress banners printed
+        # before the --list-only short-circuit; the printf'd project list is
+        # always the last thing written before exit 0.
+        check("a project path containing a space survives as ONE entry, "
+              "not split into fragments at the space",
+              lines[-1:] == [proj], "got %r" % lines)
+
+
+def test_driver_projects_with_space_scans_correct_directory():
+    """Final-review Fix 1, full live pipeline: the reviewer's exact repro -
+    `--projects "<path with a space>"` must resolve to a corpus entry for the
+    real, intact directory and scan ITS contents, not a word-split fragment
+    (which build_corpus.py would mark status=failed for a nonexistent path,
+    or - worse, per the reviewer's report - silently resolve some unrelated
+    directory relative to cwd if a same-named fragment happened to exist)."""
+    import subprocess
+    import tempfile
+    import json as _json
+    path = os.path.join(SCRIPTS, "run_weakness_analysis.sh")
+    with tempfile.TemporaryDirectory() as base:
+        proj = os.path.join(base, "my project")
+        os.makedirs(proj)
+        write(os.path.join(proj, "package.json"), '{"name": "spaced-project"}')
+        out_dir = os.path.join(base, "out")
+        env = dict(os.environ, WEAKNESS_SKIP_SELFTEST="1")
+        proc = subprocess.run(
+            ["bash", path, "--projects", proj, "--out", out_dir,
+             "--phase", "collect", "--no-siblings"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=180)
+        out = (proc.stdout + proc.stderr).decode("utf-8", "replace")
+        check("collect phase on a spaced --projects path exits 0",
+              proc.returncode == 0, "got %d: %s" % (proc.returncode, out[-2000:]))
+
+        corpus_path = os.path.join(out_dir, ".work", "corpus.json")
+        check("corpus.json was produced", os.path.isfile(corpus_path))
+        if not os.path.isfile(corpus_path):
+            return
+        with open(corpus_path, "r", encoding="utf-8") as f:
+            corpus = _json.load(f)
+        repos = corpus.get("repos", [])
+        check("exactly one project was resolved from a spaced --projects path "
+              "(a word-split bug would produce two fragment entries instead)",
+              len(repos) == 1, "got %r" % repos)
+        if repos:
+            check("the resolved project's name is the intact directory name",
+                  repos[0].get("name") == "my project", "got %r" % repos[0].get("name"))
+            check("the resolved project was not marked failed",
+                  repos[0].get("status") != "failed", "got %r" % repos[0])
+
+        evidence_path = os.path.join(out_dir, ".work", "evidence", "my project.json")
+        check("the evidence bundle for the correctly-named project was written",
+              os.path.isfile(evidence_path))
+        if os.path.isfile(evidence_path):
+            with open(evidence_path, "r", encoding="utf-8") as f:
+                bundle = _json.load(f)
+            check("the evidence bundle actually scanned the fixture directory "
+                  "(sees its package.json) - proves the right tree was read, "
+                  "not an empty or unrelated one",
+                  "package.json" in (bundle.get("structure", {}).get("top_level") or []),
+                  "got %r" % bundle.get("structure"))
+
+
+def test_driver_persists_and_recombines_scan_command_across_phases_source():
+    """Final-review Fix 3, source-level backstop."""
+    path = os.path.join(SCRIPTS, "run_weakness_analysis.sh")
+    with open(path, "r", encoding="utf-8") as f:
+        src = f.read()
+    check("collect phase persists WEAKNESS_INVOKED_CMD to scan-command.txt",
+          '"$WEAKNESS_INVOKED_CMD" > "$WORK/scan-command.txt"' in src)
+    check("merge phase reads scan-command.txt back",
+          '$WORK/scan-command.txt' in src.split('if [ "$PHASE" = "merge" ]')[1])
+    check("merge phase falls back to its own invocation when no persisted "
+          "collect-phase command exists",
+          'REPORT_SCAN_CMD="$WEAKNESS_INVOKED_CMD"' in src)
+    check("gen_report.py is invoked with the recombined command, not the "
+          "raw merge-phase-only WEAKNESS_INVOKED_CMD",
+          '--scan-command "$REPORT_SCAN_CMD"' in src)
+
+
+def test_driver_report_scan_command_shows_both_phase_invocations():
+    """Final-review Fix 3, full live pipeline across two SEPARATE processes
+    (collect, then merge - exactly how this driver is actually used), proving
+    the report's Scan command section is not just the merge-phase argv."""
+    import subprocess
+    import tempfile
+    path = os.path.join(SCRIPTS, "run_weakness_analysis.sh")
+    with tempfile.TemporaryDirectory() as base:
+        proj = os.path.join(base, "app")
+        os.makedirs(proj)
+        write(os.path.join(proj, "package.json"), '{"name":"app"}')
+        out_dir = os.path.join(base, "out")
+        env = dict(os.environ, WEAKNESS_SKIP_SELFTEST="1")
+
+        collect = subprocess.run(
+            ["bash", path, "--projects", proj, "--out", out_dir,
+             "--phase", "collect", "--no-siblings"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=180)
+        check("collect phase (separate process) exits 0",
+              collect.returncode == 0,
+              "got %d: %s" % (collect.returncode,
+                              (collect.stdout + collect.stderr).decode("utf-8", "replace")[-1500:]))
+
+        merge = subprocess.run(
+            ["bash", path, "--phase", "merge", "--out", out_dir,
+             "--fail-on", "none", "--fail-on-readiness", "none"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=180)
+        check("merge phase (a separate process, different argv) does not error",
+              merge.returncode in (0, 1),
+              "got %d: %s" % (merge.returncode,
+                              (merge.stdout + merge.stderr).decode("utf-8", "replace")[-1500:]))
+
+        report_path = os.path.join(out_dir, "WEAKNESS-REPORT.md")
+        check("WEAKNESS-REPORT.md was produced", os.path.isfile(report_path))
+        if not os.path.isfile(report_path):
+            return
+        with open(report_path, "r", encoding="utf-8") as f:
+            report = f.read()
+        section = report.split("## 2. Scan command")[1].split("## 3.")[0]
+        check("report's Scan command section shows the ORIGINAL collect-phase "
+              "invocation (--projects, the scanned path)",
+              "--projects" in section and "app" in section,
+              "section: %r" % section)
+        # Each arg is individually shell-quoted by WEAKNESS_INVOKED_CMD's
+        # capture loop (e.g. "'--phase' 'merge'"), so look for the quoted
+        # 'merge' token rather than an unquoted "--phase merge" substring.
+        check("report's Scan command section ALSO shows the merge-phase "
+              "invocation, not just the collect one",
+              "'merge'" in section and "'--fail-on'" in section,
+              "section: %r" % section)
+        check("the two invocations are visibly combined (arrow separator), "
+              "not just one overwriting the other",
+              "→" in section, "section: %r" % section)
+
+
+def test_driver_no_input_exits_2():
+    import subprocess
+    path = os.path.join(SCRIPTS, "run_weakness_analysis.sh")
+    proc = subprocess.run(["bash", path], stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, timeout=120)
+    out = (proc.stdout + proc.stderr).decode("utf-8", "replace")
+    check("no input mode exits 2", proc.returncode == 2, "got %d" % proc.returncode)
+    check("usage names all five input modes",
+          all(m in out for m in ("--root", "--projects", "--corpus", "--org", "--db")))
+
+
+def test_gate_exit_codes():
+    import tempfile
+    import json as _json
+    import merge_insights
+    policy = _policy.load_policy()
+    projects = [{"project_slug": "a", "readiness": "production-ready", "security_risk": "low"},
+                {"project_slug": "b", "readiness": "needs-work", "security_risk": "critical"},
+                {"project_slug": "c", "readiness": "unknown", "security_risk": "none"}]
+    import copy
+    p1 = copy.deepcopy(projects)
+    check("a critical finding blocks at --fail-on high",
+          merge_insights.apply_gate(p1, policy, "high", "not-ready") is True)
+    check("the critical project is the blocked one",
+          [x["project_slug"] for x in p1 if x["blocked"]] == ["b", "c"],
+          "got %s" % [x["project_slug"] for x in p1 if x["blocked"]])
+    p2 = copy.deepcopy(projects)
+    check("--fail-on none disables the security gate for b",
+          merge_insights.apply_gate(p2, policy, "none", "none") is False)
+    p3 = copy.deepcopy(projects)
+    merge_insights.apply_gate(p3, policy, "none", "not-ready")
+    check("readiness unknown blocks at the default readiness threshold",
+          [x["project_slug"] for x in p3 if x["blocked"]] == ["c"])
+    p4 = copy.deepcopy(projects)
+    merge_insights.apply_gate(p4, policy, "none", "needs-work")
+    check("--fail-on-readiness needs-work also blocks needs-work",
+          set(x["project_slug"] for x in p4 if x["blocked"]) == set(("b", "c")))
+
+
+def test_driver_blocked_computation_exits_2_on_bad_insights():
+    """A malformed/unreadable insights.json at the final BLOCKED= step must
+    make the driver exit 2, never fall through to the "nothing blocked, exit
+    0" branch. This extracts the real BLOCKED= block out of the shipped
+    driver (not a hand copy) so a regression - e.g. someone dropping the
+    trailing `|| exit 2` again - is caught here, not just eyeballed in review.
+    """
+    import subprocess
+    import tempfile
+    import re
+    import shlex
+
+    path = os.path.join(SCRIPTS, "run_weakness_analysis.sh")
+    with open(path, "r", encoding="utf-8") as f:
+        src = f.read()
+
+    m = re.search(
+        r'BLOCKED="\$\(python3 -c "\n.*?print\(n\)"\)"[^\n]*',
+        src, re.S)
+    check("found the BLOCKED= computation block in the driver", m is not None)
+    if not m:
+        return
+    block = m.group(0)
+    check("BLOCKED= computation is chained with || exit 2 (matches every "
+          "other python3 call in this file)",
+          re.search(r'\|\|\s*exit\s+2\s*$', block) is not None,
+          "block: %r" % block)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        insights_path = os.path.join(tmp, "insights.json")
+        write(insights_path, "{not valid json")
+
+        script = "set -uo pipefail\nOUT=%s\n%s\necho UNREACHABLE_BLOCKED=$BLOCKED\nexit 0\n" % (
+            shlex.quote(tmp), block)
+        proc = subprocess.run(["bash", "-c", script], stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=30)
+        out = (proc.stdout + proc.stderr).decode("utf-8", "replace")
+        check("malformed insights.json at the BLOCKED= step exits 2, not 0",
+              proc.returncode == 2, "got %d, output: %s" % (proc.returncode, out))
+        check("script never falls through past the failed BLOCKED= computation",
+              "UNREACHABLE_BLOCKED" not in out, "output: %s" % out)
+
+
+def test_skill_md_and_references():
+    import re
+    skill_md = os.path.join(SKILL, "SKILL.md")
+    check("SKILL.md exists", os.path.isfile(skill_md))
+    with open(skill_md, "r", encoding="utf-8") as f:
+        md = f.read()
+    check("SKILL.md has YAML frontmatter", md.startswith("---\n"))
+    for field in ("name:", "description:", "license:"):
+        check("SKILL.md frontmatter has %s" % field, field in md.split("---")[1])
+    check("SKILL.md names the skill correctly",
+          re.search(r"^name:\s*project-weakness-analysis\s*$", md, re.M) is not None)
+    check("SKILL.md documents the dispatch protocol",
+          "tasks.json" in md and "output_path" in md)
+    check("SKILL.md forbids the dispatcher writing agent output itself",
+          "never write" in md.lower() or "do not write" in md.lower())
+    check("SKILL.md states that --db is optional",
+          "optional" in md.lower() and "--db" in md)
+    check("SKILL.md documents both exit-1 meanings",
+          "exit" in md.lower() and "blocked" in md.lower())
+
+    meth = os.path.join(SKILL, "references", "methodology.md")
+    check("references/methodology.md exists", os.path.isfile(meth))
+    with open(meth, "r", encoding="utf-8") as f:
+        mtext = f.read().lower()
+    for word in ("victim", "donor", "spotlight", "diffusion", "hackathon", "one-line pitch"):
+        check("methodology.md is scrubbed of %r" % word, word not in mtext)
+
+    sql = os.path.join(SKILL, "references", "project-insights.sql")
+    check("references/project-insights.sql exists", os.path.isfile(sql))
+    with open(sql, "r", encoding="utf-8") as f:
+        sqltext = f.read()
+    policy = _policy.load_policy()
+    for col in policy["table_columns"]:
+        check("DDL has a column for %s" % col, col in sqltext)
+
+
+def test_no_team_vocabulary_anywhere():
+    import re
+    bad = re.compile(
+        r"\b(teams?|hackathon|victims?|donors?|"
+        r"promote[sd]?|promoting|promotion|"
+        r"spotlight(s|ed|ing)?|diffusion)\b",
+        re.I,
+    )
+    offenders = []
+    # selftest.py itself is excluded: this very check's word list and regex
+    # necessarily spell out the banned terms as literals in order to detect
+    # them. It is the enforcement mechanism, not skill content - excluding it
+    # is not a weakening of the assertion, which still covers every other
+    # file (SKILL.md, references/, policy/, scripts/, and any other file
+    # under tests/, e.g. fixtures).
+    excluded = os.path.join(HERE, "selftest.py")
+    for root, dirs, files in os.walk(SKILL):
+        # "insights" is this skill's own regenerable, gitignored output
+        # directory (see SKILL.md's Output section) - it is scan results,
+        # not skill content, and can legitimately contain ordinary English
+        # matches (e.g. a sibling scanner's report prose using "promoting").
+        dirs[:] = [d for d in dirs if d not in ("__pycache__", ".git", "insights")]
+        for fn in files:
+            if not fn.endswith((".md", ".py", ".json", ".sh", ".sql")):
+                continue
+            p = os.path.join(root, fn)
+            if os.path.abspath(p) == os.path.abspath(excluded):
+                continue
+            with open(p, "r", encoding="utf-8", errors="replace") as f:
+                for i, line in enumerate(f, 1):
+                    if bad.search(line):
+                        offenders.append("%s:%d" % (os.path.relpath(p, SKILL), i))
+    check("no hackathon-era vocabulary anywhere in the skill",
+          not offenders, "found at %s" % ", ".join(offenders[:5]))
+
+
+if __name__ == "__main__":
+    sys.exit(main())
