@@ -17,6 +17,12 @@ This project adheres to [Semantic Versioning](http://semver.org/) and [Keep a Ch
 ### Security
 
 
+## [Unreleased] - YYYY-MM-DD
+
+### Fixed
+- Broken directory links for each skill to ensure consistency and accessibility in README.md [GS-339].
+
+
 ## [1.0.0] - 2026-08-30
 
 ### Added
