@@ -42,6 +42,7 @@
     "cdn.storifyme.com",
     "cdn.storifyme.xyz",
     "storifyme.xyz",
+    "stories.storifyme.com",
     "apv-static.minute-ly.com"
   ],
   "optimjack_keywords": [
@@ -49,5 +50,7 @@
     "kissmetrics",
     "storifyme",
     "minute-ly"
-  ]
+  ],
+  "optimjack_ioc_pack": "iocs/optimjack-2026-11-17.json",
+  "optimjack_ioc_pack_notes": "Full OPTIMJACK pack extracted from OPTIMJACK_Complete_IOC_Intelligence_2026-11-17.xlsx. Pass --optimjack-xlsx to refresh from a newer workbook, or --optimjack-json to override."
 }

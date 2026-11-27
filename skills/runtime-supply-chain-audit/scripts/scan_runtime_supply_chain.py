@@ -462,26 +462,171 @@ def scan_pip_upgrade_unfloored(root: Path, text: str, path: Path, report: Report
 
 # --- OPTIMJACK --------------------------------------------------------------
 
+_HIGH_MARKER_RES = [
+    ("window._k7", re.compile(r"(?i)(?<![A-Za-z0-9_])window\._k7(?![A-Za-z0-9_])")),
+    ("window.__k7b", re.compile(r"(?i)(?<![A-Za-z0-9_])window\.__k7b(?![A-Za-z0-9_])")),
+    ("window._cc", re.compile(r"(?i)window\._cc(?![A-Za-z0-9_])")),
+    ("window._qxc", re.compile(r"(?i)window\._qxc(?![A-Za-z0-9_])")),
+    ("window._shot", re.compile(r"(?i)window\._shot(?![A-Za-z0-9_])")),
+    ("obChTK", re.compile(r"(?i)(?<![A-Za-z0-9_])obChTK(?![A-Za-z0-9_])")),
+    ("__DAILI_CFG", re.compile(r"(?i)__DAILI_CFG")),
+    ("__LDY_CFG", re.compile(r"(?i)__LDY_CFG")),
+    ("__cais_ds_eval_ok_v1", re.compile(r"(?i)__cais_ds_eval_ok_v1")),
+    ("data-daili-gate", re.compile(r"(?i)data-daili-gate")),
+    ("02111110", re.compile(r"(?<![0-9])02111110(?![0-9])")),
+    ("d7K9mP2x", re.compile(r"d7K9mP2x")),
+    ("ds_sw_fired", re.compile(r"(?i)(?<![A-Za-z0-9_])ds_sw_fired(?![A-Za-z0-9_])")),
+    ("ds_vk", re.compile(r"(?i)(?<![A-Za-z0-9_])ds_vk(?![A-Za-z0-9_])")),
+    ("BIGNIAO", re.compile(r"(?i)(?<![A-Za-z0-9_])BIGNIAO(?![A-Za-z0-9_])")),
+    ("post_exploit.js", re.compile(r"(?i)post_exploit\.js")),
+    ("rce_worker_26.x.js", re.compile(r"(?i)rce_worker_26\.x\.js")),
+    ("keychain-2.db", re.compile(r"(?i)keychain-2\.db")),
+    ("chainFrame", re.compile(r"(?i)(?<![A-Za-z0-9_])chainFrame(?![A-Za-z0-9_])")),
+]
+
+
+def _merge_optimjack_pack(policy: dict, pack: dict) -> None:
+    """Merge a full OPTIMJACK IOC pack into policy (in place)."""
+    cdn = set(policy.get("optimjack_domains") or [])
+    cdn.update(pack.get("poisoned_cdn_hosts") or [])
+    policy["optimjack_domains"] = sorted(cdn)
+    policy["_optimjack_pack"] = pack
+
+
+def _load_optimjack_into_policy(policy: dict, skill_dir: Path, json_path: str, xlsx_path: str) -> None:
+    pack = None
+    if xlsx_path:
+        sys.path.insert(0, str(skill_dir / "scripts"))
+        from load_optimjack_xlsx import extract_pack  # local sibling
+
+        pack = extract_pack(Path(xlsx_path))
+    elif json_path:
+        pack = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    else:
+        rel = policy.get("optimjack_ioc_pack")
+        if rel:
+            cand = skill_dir / rel
+            if cand.is_file():
+                pack = json.loads(cand.read_text(encoding="utf-8"))
+    if pack:
+        _merge_optimjack_pack(policy, pack)
+
+
 def scan_optimjack(root: Path, text: str, path: Path, policy: dict, report: Report) -> None:
-    # Skip this skill's own policy/docs to avoid self-hits.
+    # Skip this skill's own policy/docs/fixtures to avoid self-hits.
     rel = _rel(root, path)
     if "runtime-supply-chain-audit" in rel.replace("\\", "/"):
         return
     lower = text.lower()
-    for domain in policy["optimjack_domains"]:
+    pack = policy.get("_optimjack_pack") or {}
+
+    for domain in policy.get("optimjack_domains") or []:
         if domain.lower() in lower:
             report.findings.append(
                 Finding(
-                    "V4-optimjack-domain",
+                    "V4-optimjack-cdn",
                     "critical",
                     rel,
-                    f"OPTIMJACK domain present: {domain}",
+                    f"OPTIMJACK poisoned-CDN host present: {domain}",
                     evidence=domain,
                 )
             )
+
+    for domain in pack.get("attacker_domains") or []:
+        if domain.lower() in lower:
+            report.findings.append(
+                Finding(
+                    "V4-optimjack-attacker-domain",
+                    "critical",
+                    rel,
+                    f"OPTIMJACK attacker domain present: {domain}",
+                    evidence=domain,
+                )
+            )
+
+    for ip in pack.get("attacker_ips") or []:
+        idx = text.find(ip)
+        if idx < 0:
+            continue
+        # boundary: not part of a longer dotted number
+        start, end = idx, idx + len(ip)
+        if start > 0 and (text[start - 1].isdigit() or text[start - 1] == "."):
+            continue
+        if end < len(text) and (text[end].isdigit() or text[end] == "."):
+            continue
+        report.findings.append(
+            Finding(
+                "V4-optimjack-attacker-ip",
+                "critical",
+                rel,
+                f"OPTIMJACK attacker IP present: {ip}",
+                evidence=ip,
+            )
+        )
+
+    for url in pack.get("attacker_urls") or []:
+        if url.lower() in lower:
+            report.findings.append(
+                Finding(
+                    "V4-optimjack-attacker-url",
+                    "critical",
+                    rel,
+                    f"OPTIMJACK attacker URL present: {url}",
+                    evidence=url[:120],
+                )
+            )
+
+    for url in pack.get("poisoned_script_urls") or []:
+        if url.lower() in lower:
+            report.findings.append(
+                Finding(
+                    "V4-optimjack-poisoned-script",
+                    "critical",
+                    rel,
+                    f"OPTIMJACK historical poisoned script URL present: {url}",
+                    evidence=url[:120],
+                )
+            )
+
+    for h in pack.get("sha256") or []:
+        if h.lower() in lower:
+            report.findings.append(
+                Finding(
+                    "V4-optimjack-sha256",
+                    "critical",
+                    rel,
+                    "OPTIMJACK campaign SHA-256 present",
+                    evidence=h,
+                )
+            )
+
+    for w in pack.get("wallets") or []:
+        if w and w in text:
+            report.findings.append(
+                Finding(
+                    "V4-optimjack-wallet",
+                    "high",
+                    rel,
+                    "OPTIMJACK campaign wallet address present",
+                    evidence=w[:80],
+                )
+            )
+
+    for label, rx in _HIGH_MARKER_RES:
+        if rx.search(text):
+            report.findings.append(
+                Finding(
+                    "V4-optimjack-marker",
+                    "high",
+                    rel,
+                    f"OPTIMJACK high-signal browser marker: {label}",
+                    evidence=label,
+                )
+            )
+
     # Keyword hits only in HTML/JS/GTM-ish files to reduce false positives in changelogs.
     if path.suffix.lower() in {".html", ".htm", ".js", ".jsx", ".ts", ".tsx", ".vue"} or "gtm" in path.name.lower():
-        for kw in policy["optimjack_keywords"]:
+        for kw in policy.get("optimjack_keywords") or []:
             if re.search(rf"\b{re.escape(kw)}\b", lower):
                 report.findings.append(
                     Finding(
@@ -560,6 +705,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default=str(Path(__file__).resolve().parents[1] / "policy" / "floors.json"),
         help="Path to floors.json policy",
     )
+    parser.add_argument(
+        "--optimjack-json",
+        default="",
+        help="OPTIMJACK IOC pack JSON (overrides policy optimjack_ioc_pack)",
+    )
+    parser.add_argument(
+        "--optimjack-xlsx",
+        default="",
+        help="OPTIMJACK workbook (.xlsx); parsed via load_optimjack_xlsx.py",
+    )
     parser.add_argument("--json-out", default="", help="Write findings JSON to this path")
     parser.add_argument("--md-out", default="", help="Write markdown report to this path")
     args = parser.parse_args(argv)
@@ -569,6 +724,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"policy not found: {policy_path}", file=sys.stderr)
         return 2
     policy = _load_policy(policy_path)
+    skill_dir = Path(__file__).resolve().parents[1]
+    _load_optimjack_into_policy(policy, skill_dir, args.optimjack_json, args.optimjack_xlsx)
 
     all_findings: List[Finding] = []
     scanned = 0

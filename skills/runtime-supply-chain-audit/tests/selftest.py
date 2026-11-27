@@ -16,7 +16,11 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SKILL_DIR / "scripts"))
 
-from scan_runtime_supply_chain import scan_root, _load_policy  # noqa: E402
+from scan_runtime_supply_chain import (  # noqa: E402
+    scan_root,
+    _load_policy,
+    _load_optimjack_into_policy,
+)
 
 
 def write(path: Path, content: str) -> None:
@@ -56,9 +60,14 @@ def build_infected(root: Path) -> None:
     )
     write(
         root / "web" / "index.html",
-        '<script src="https://cdn.optimizely.com/js/123.js"></script>\n',
+        '<script src="https://cdn.optimizely.com/js/123.js"></script>\n'
+        '<script>window._k7 = 1; fetch("https://1688360.cc/track.js")</script>\n',
     )
     write(root / "tools" / "notes.md", "use bun@1.4.3 for local runs\n")
+    write(
+        root / "assets" / "hashes.txt",
+        "f7b84b9a94f749f8ced3f0112d0a66894e8bbc3b4aa5592021d1b8976a9bad40\n",
+    )
 
 
 def build_clean(root: Path) -> None:
@@ -90,6 +99,11 @@ def checks_present(findings, *names: str) -> None:
 
 def main() -> int:
     policy = _load_policy(SKILL_DIR / "policy" / "floors.json")
+    _load_optimjack_into_policy(policy, SKILL_DIR, "", "")
+    assert policy.get("_optimjack_pack"), "shipped OPTIMJACK IOC pack did not load"
+    assert "stories.storifyme.com" in policy["optimjack_domains"]
+    assert "1688360.cc" in policy["_optimjack_pack"]["attacker_domains"]
+
     tmp = Path(tempfile.mkdtemp(prefix="runtime-sca-selftest-"))
     try:
         infected = tmp / "infected"
@@ -110,7 +124,10 @@ def main() -> int:
             "V3.2-certifi",
             "V3.2-pip",
             "V3.2-pip-unfloored",
-            "V4-optimjack-domain",
+            "V4-optimjack-cdn",
+            "V4-optimjack-attacker-domain",
+            "V4-optimjack-marker",
+            "V4-optimjack-sha256",
         )
 
         good = scan_root(clean, policy)
@@ -124,6 +141,19 @@ def main() -> int:
         # Policy file must exist and list OPTIMJACK domains.
         assert policy["optimjack_domains"], "empty OPTIMJACK domain list"
         assert "1.107.0" in policy["litellm"]["malicious_versions"]
+
+        # xlsx loader round-trip when workbook is available in the environment
+        xlsx = Path(
+            "/cursor/stores/self/docs/OPTIMJACK_Complete_IOC_Intelligence_2026-11-17.xlsx"
+        )
+        if xlsx.is_file():
+            sys.path.insert(0, str(SKILL_DIR / "scripts"))
+            from load_optimjack_xlsx import extract_pack
+
+            pack = extract_pack(xlsx)
+            assert len(pack["attacker_domains"]) >= 10
+            assert len(pack["sha256"]) >= 20
+            assert "cdn.optimizely.com" in pack["poisoned_cdn_hosts"]
 
         print(f"PASS — infected findings={len(bad.findings)} clean_findings={len(good.findings)}")
         return 0

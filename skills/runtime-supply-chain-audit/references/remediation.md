@@ -29,6 +29,7 @@ Ordered steps agents should recommend after findings. Prefer concrete version fl
 
 ## V4 — OPTIMJACK
 
-1. Remove script tags / GTM loads for listed CDN domains.
-2. Rotate session cookies and payment credentials if a production site loaded them during the window.
-3. When a fuller IOC spreadsheet is available, extend `policy/floors.json` and re-scan.
+1. Remove script tags / GTM loads for poisoned CDN hosts and exact historical vendor URLs in the IOC pack.
+2. Hunt DNS/proxy logs for attacker domains/IPs from `iocs/optimjack-*.json`; block high-confidence attacker hosts only (do not globally block Optimizely/Kissmetrics CDNs).
+3. Rotate session cookies and payment credentials if a production site loaded poisoned scripts during the window.
+4. Refresh the pack: `python3 scripts/load_optimjack_xlsx.py OPTIMJACK_*.xlsx -o iocs/optimjack-YYYY-MM-DD.json` then re-scan.

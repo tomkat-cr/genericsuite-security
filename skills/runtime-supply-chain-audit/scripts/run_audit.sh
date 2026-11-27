@@ -36,10 +36,19 @@ if [ "$#" -eq 0 ]; then
   fi
 fi
 
+OPTIMJACK_ARGS=""
+if [ -n "${OPTIMJACK_XLSX:-}" ]; then
+  OPTIMJACK_ARGS="--optimjack-xlsx ${OPTIMJACK_XLSX}"
+elif [ -n "${OPTIMJACK_JSON:-}" ]; then
+  OPTIMJACK_ARGS="--optimjack-json ${OPTIMJACK_JSON}"
+fi
+
 echo "### Step 2: scan $*"
 echo "    Reports -> $OUT_DIR"
+# shellcheck disable=SC2086
 python3 "$SKILL_DIR/scripts/scan_runtime_supply_chain.py" \
   --policy "$SKILL_DIR/policy/floors.json" \
+  $OPTIMJACK_ARGS \
   --json-out "$OUT_DIR/findings.json" \
   --md-out "$OUT_DIR/report.md" \
   "$@"

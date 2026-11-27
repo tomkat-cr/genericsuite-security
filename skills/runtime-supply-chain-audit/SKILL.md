@@ -53,11 +53,26 @@ python3 scripts/scan_runtime_supply_chain.py --policy policy/floors.json ROOT
 | V2 Brotli | `poetry.lock`, `uv.lock`, `requirements*.txt`, Pipfile.lock | `brotli`/`brotlicffi` in 1.0.3–1.2.0 and not a listed fixed release |
 | V3.1 LiteLLM | locks + Docker/docs ranges | Exact `1.107.0`, or a specifier that can resolve to it |
 | V3.2 Trust store | locks + install scripts | `certifi` / `pip` / `uv` below floors; unfloored `pip install --upgrade pip` |
-| V4 OPTIMJACK | text/HTML/JS | Domains in `policy/floors.json` (Optimizely, Kissmetrics, StorifyMe, minute-ly) |
+| V4 OPTIMJACK | text/HTML/JS + locks/assets | Poisoned CDN hosts, attacker domains/IPs/URLs, campaign SHA-256s, wallets, high-signal browser markers from `iocs/optimjack-2026-11-17.json` |
+
+## OPTIMJACK IOC pack
+
+The skill ships `iocs/optimjack-2026-11-17.json` extracted from `OPTIMJACK_Complete_IOC_Intelligence_2026-11-17.xlsx`. The scanner loads it by default.
+
+Refresh from a workbook (stdlib xlsx parse):
+
+```bash
+python3 scripts/load_optimjack_xlsx.py /path/to/OPTIMJACK_*.xlsx -o iocs/optimjack-2026-11-17.json
+python3 scripts/scan_runtime_supply_chain.py --optimjack-xlsx /path/to/OPTIMJACK_*.xlsx ROOT
+# or
+python3 scripts/scan_runtime_supply_chain.py --optimjack-json iocs/optimjack-2026-11-17.json ROOT
+```
+
+Victim brands on the workbook’s Affected Sites sheet are **not** treated as attacker IOCs. Exclusion-list digests are omitted from the SHA-256 set.
 
 ## Updating Policy
 
-Edit `policy/floors.json` only — keep scanner code campaign-agnostic. When a fuller IOC spreadsheet arrives (e.g. OPTIMJACK xlsx), append domains to `optimjack_domains` and re-run the self-test.
+Edit `policy/floors.json` for runtime floors; refresh `iocs/optimjack-*.json` for OPTIMJACK. Re-run `tests/selftest.py` after either change.
 
 See `references/remediation.md` for ordered customer-facing fix steps.
 
