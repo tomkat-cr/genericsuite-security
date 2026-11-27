@@ -1,0 +1,56 @@
+{
+  "campaign": "oct-nov-2026-runtime-supply-chain",
+  "updated": "2026-11-27",
+  "sources": [
+    "https://nodejs.org/en/blog/vulnerability/october-2026-security-releases",
+    "https://docs.litellm.ai/blog/security-incident-oct-21-2026",
+    "https://emudhra.we-have-a-problem.com/"
+  ],
+  "node": {
+    "affected_major_lines": [22, 24, 26],
+    "fixed_by_major": {
+      "22": "22.23.4",
+      "24": "24.22.1",
+      "26": "26.12.1"
+    },
+    "notes": "Bare majors in .nvmrc (e.g. '26') document an affected line without a patched floor — flag as FINDING."
+  },
+  "bun": {
+    "vulnerable_max_inclusive": "1.4.3",
+    "notes": "Brotli RCE called out for Bun <= 1.4.3."
+  },
+  "brotli": {
+    "vulnerable_range_inclusive": ["1.0.3", "1.2.0"],
+    "fixed_versions": ["1.0.10", "1.1.1", "1.2.1"],
+    "min_safe_on_1_2_line": "1.2.1",
+    "package_names": ["brotli", "brotlicffi", "Brotli"]
+  },
+  "litellm": {
+    "malicious_versions": ["1.107.0"],
+    "notes": "Exact version only. Ranges that can resolve to 1.107.0 are FINDING; locked non-malicious versions are CLEAN for this campaign."
+  },
+  "trust_store": {
+    "pip_min": "26.2.2",
+    "certifi_min": "2026.10.19",
+    "uv_min": "0.13.4"
+  },
+  "optimjack_domains": [
+    "cdn.optimizely.com",
+    "i.kissmetrics.com",
+    "i.kissmetrics.io",
+    "scripts.kissmetrics.io",
+    "cdn.storifyme.com",
+    "cdn.storifyme.xyz",
+    "storifyme.xyz",
+    "stories.storifyme.com",
+    "apv-static.minute-ly.com"
+  ],
+  "optimjack_keywords": [
+    "optimizely",
+    "kissmetrics",
+    "storifyme",
+    "minute-ly"
+  ],
+  "optimjack_ioc_pack": "iocs/optimjack-2026-11-17.json",
+  "optimjack_ioc_pack_notes": "Full OPTIMJACK pack extracted from OPTIMJACK_Complete_IOC_Intelligence_2026-11-17.xlsx. Pass --optimjack-xlsx to refresh from a newer workbook, or --optimjack-json to override."
+}

@@ -6,9 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `genericsuite-security` is a Claude Code **plugin** (see `.claude-plugin/marketplace.json`, plugin name `gs-security-suite`) that packages security-response skills for GenericSuite and its ecosystem. It is a submodule of the `genericsuite` monorepo — see `/Users/carlosramirez/desarrollo/genericsuite/CLAUDE.md` for cross-package conventions. This package has no application code of its own; it is entirely skills + supporting Python scripts invoked by those skills.
 
-The plugin currently ships five skills:
+The plugin currently ships six skills:
 
 - `skills/supply-chain-ioc-scan` — built in response to the Keyv/Cacheable npm supply-chain worm ("Shai-Hulud: Here We Go Again", disclosed 2026-08-04, see `CHANGELOG.md`). Answers "did this campaign touch this machine?"
+- `skills/runtime-supply-chain-audit` — re-checks a checkout for the Oct 21 / Nov 13–16 2026 incident class: Node 22/24/26 and Bun floors, Python brotli, LiteLLM `1.107.0`, pip/certifi/uv trust-store floors, and OPTIMJACK CDN domains. Policy lives in `policy/floors.json`.
 - `skills/repo-corpus` — turns an org, a user, or a local checkout into safe, attributable clones plus a `corpus.json` manifest. Produces **no findings**; it is the foundation the scanners consume.
 - `skills/repo-docker-scanner` — consumes a corpus and reports mutable container-image references, tiered P0/P1/P2 by execution context.
 - `skills/repo-packages-scanner` — consumes a corpus and reports unpinned GitHub Actions, npm/PyPI/Go/Rust/Ruby dependencies, and unpinned remote code execution, tiered P0/P1/P2. Also carries `run_gh_scan.sh`, moved unchanged from `supply-chain-ioc-scan` (see that skill's history for why).
@@ -31,6 +32,14 @@ Run the full supply-chain scan (from `skills/supply-chain-ioc-scan/`):
 PROFILE=iocs/other-campaign.json ./scripts/run_scan.sh ~/dev   # non-default IOC profile
 ```
 Exit codes: `0` clean, `1` findings, `2` error. Reports are written to `$TMPDIR/ioc-scan-<timestamp>/`.
+
+Run the runtime / supply-chain floor audit (from `skills/runtime-supply-chain-audit/`):
+```bash
+./scripts/run_audit.sh /path/to/genericsuite
+./scripts/run_audit.sh ~/dev/pkg-a ~/dev/pkg-b
+python3 tests/selftest.py
+```
+Exit codes: `0` clean, `1` findings, `2` error. Reports under `$TMPDIR/runtime-sca-<timestamp>/`. Policy floors and OPTIMJACK domains live in `policy/floors.json`.
 
 Run the self-test before trusting any "clean" result (also run automatically by `run_scan.sh`):
 ```bash

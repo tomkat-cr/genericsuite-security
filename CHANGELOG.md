@@ -7,6 +7,8 @@ This project adheres to [Semantic Versioning](http://semver.org/) and [Keep a Ch
 ## [Unreleased] - YYYY-MM-DD
 
 ### Added
+- New skill `runtime-supply-chain-audit`: scan a checkout for the Oct 21 / Nov 13–16 2026 incident class — Node 22/24/26 and Bun floors, Python `brotli`/`brotlicffi`, LiteLLM `1.107.0` (exact + resolvable ranges), pip/certifi/uv trust-store floors, and OPTIMJACK CDN domains/keywords. Ships `policy/floors.json`, `scripts/run_audit.sh`, `scripts/scan_runtime_supply_chain.py`, hermetic `tests/selftest.py`, and remediation notes. Registered in `.claude-plugin/marketplace.json`.
+- OPTIMJACK full IOC pack support: `iocs/optimjack-2026-11-17.json`, `scripts/load_optimjack_xlsx.py` (stdlib xlsx parse), and scanner flags `--optimjack-json` / `--optimjack-xlsx` covering attacker domains/IPs/URLs, SHA-256s, wallets, poisoned script URLs, and high-signal browser markers (includes `stories.storifyme.com` beyond the original four CDN families).
 
 ### Changed
 

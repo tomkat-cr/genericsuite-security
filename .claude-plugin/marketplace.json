@@ -16,6 +16,7 @@
       "strict": false,
       "skills": [
         "./skills/supply-chain-ioc-scan",
+        "./skills/runtime-supply-chain-audit",
         "./skills/repo-corpus",
         "./skills/repo-docker-scanner",
         "./skills/repo-packages-scanner",
